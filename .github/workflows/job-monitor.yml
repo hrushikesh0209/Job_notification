@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   monitor:
-    name: Check 200 official career portals
+    name: Check official company career portals
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:

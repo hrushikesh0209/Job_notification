@@ -1,6 +1,8 @@
 # Official Career Job Monitor
 
-An hourly GitHub Actions monitor for the 200 official career portals in `Final_Global_Software_Companies_Job_Portals.xlsx`. It searches for India-based Java/backend roles suitable for approximately two years of experience, suppresses duplicate notifications, and stays silent when nothing new qualifies.
+An hourly GitHub Actions monitor for the company career links in `Final_Global_Software_Companies_Job_Portals.xlsx`. It searches for India-based Java/backend roles suitable for approximately two years of experience, suppresses duplicate notifications, and stays silent when nothing new qualifies.
+
+The workbook currently contains 200 rows. The generic `linkedin.com/jobs/search` row is intentionally skipped because it is an aggregator search rather than LinkedIn's company-specific career portal, leaving 199 official company portal checks. Company-authorized ATS hosts such as Workday remain allowed.
 
 ## What it matches
 
@@ -83,4 +85,3 @@ Dry runs do not update duplicate state or send notifications. A normal local `np
 - `reports/latest.html` and `reports/latest.md` — generated only for a new-match batch.
 
 Career sites change and some use anti-automation controls. A portal showing zero candidates may require a future dedicated adapter; portal failures are logged without creating false job notifications.
-

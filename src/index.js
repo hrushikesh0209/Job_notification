@@ -6,6 +6,7 @@ import { createCrawler } from './crawler.js';
 import { matchJob } from './matcher.js';
 import { jobKey, loadState, saveState } from './state.js';
 import { notify } from './notify.js';
+import { isAllowedOfficialPortal } from './portal-policy.js';
 
 const args = new Set(process.argv.slice(2));
 const dryRun = args.has('--dry-run');
@@ -34,7 +35,9 @@ async function mapConcurrent(items, concurrency, worker) {
   return results;
 }
 
-let companies = readCompanies(config.workbookPath);
+const workbookCompanies = readCompanies(config.workbookPath);
+const excludedPortals = workbookCompanies.filter((company) => !isAllowedOfficialPortal(company));
+let companies = workbookCompanies.filter(isAllowedOfficialPortal);
 if (companyFilter) companies = companies.filter((item) => item.company.toLowerCase().includes(companyFilter.toLowerCase()));
 if (config.maxCompanies) companies = companies.slice(0, config.maxCompanies);
 if (!companies.length) throw new Error('No companies matched the workbook and command-line filters');
@@ -48,7 +51,8 @@ function writeRunResult(result) {
   fs.writeFileSync(resultPath, `${JSON.stringify({ generatedAt: new Date().toISOString(), ...result }, null, 2)}\n`, 'utf8');
 }
 
-logLine(`Run started: ${companies.length} companies${dryRun ? ' (dry run)' : ''}`);
+for (const portal of excludedPortals) logLine(`Skipped non-official generic job board: ${portal.company} (${portal.portalUrl})`);
+logLine(`Run started: ${companies.length} official company portals${dryRun ? ' (dry run)' : ''}`);
 let crawled;
 try {
   crawled = await mapConcurrent(companies, config.concurrency, async (company, index) => {
