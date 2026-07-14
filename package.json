@@ -1,0 +1,24 @@
+{
+  "name": "official-career-job-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hourly official career portal monitor with profile matching and duplicate suppression.",
+  "type": "module",
+  "scripts": {
+    "inspect:workbook": "node src/inspect-workbook.js",
+    "monitor": "node src/index.js",
+    "monitor:dry": "node src/index.js --dry-run",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.3",
+    "fast-xml-parser": "^5.3.6",
+    "fflate": "^0.8.2",
+    "nodemailer": "^9.0.3",
+    "playwright-core": "^1.55.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

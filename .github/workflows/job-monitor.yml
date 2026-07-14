@@ -1,0 +1,96 @@
+name: Hourly Official Career Job Monitor
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: hourly-official-career-job-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Check 200 official career portals
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CONCURRENCY: "4"
+      REQUEST_TIMEOUT_MS: "20000"
+      BROWSER_TIMEOUT_MS: "25000"
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+      MAIL_FROM: ${{ secrets.MAIL_FROM }}
+      MAIL_TO: ${{ secrets.MAIL_TO }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Node.js dependencies
+        run: npm ci
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chromium and system dependencies
+        run: npx playwright-core install --with-deps chromium
+
+      - name: Restore duplicate-notification state
+        uses: actions/cache/restore@v4
+        with:
+          path: data/state.json
+          key: job-monitor-state-${{ github.run_id }}
+          restore-keys: |
+            job-monitor-state-
+
+      - name: Run job monitor
+        run: node src/index.js
+
+      - name: Save duplicate-notification state
+        uses: actions/cache/save@v4
+        with:
+          path: data/state.json
+          key: job-monitor-state-${{ github.run_id }}
+
+      - name: Publish workflow summary
+        id: result
+        if: always()
+        run: node src/action-summary.js
+
+      - name: Upload new-job reports
+        if: steps.result.outputs.matches != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-job-reports-${{ github.run_id }}
+          path: reports/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-monitor-diagnostics-${{ github.run_id }}
+          path: |
+            logs/
+            data/run-result.json
+          retention-days: 14
+          if-no-files-found: ignore
