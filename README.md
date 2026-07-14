@@ -1,6 +1,6 @@
 # Official Career Job Monitor
 
-An hourly GitHub Actions monitor for the company career links in `Final_Global_Software_Companies_Job_Portals.xlsx`. It searches for India-based Java/backend roles suitable for approximately two years of experience, suppresses duplicate notifications, and stays silent when nothing new qualifies.
+A four-hourly GitHub Actions monitor for the company career links in `Final_Global_Software_Companies_Job_Portals.xlsx`. It searches for India-based Java/backend roles suitable for approximately two years of experience, suppresses duplicate notifications, and stays silent when nothing new qualifies.
 
 The workbook currently contains 200 rows. The generic `linkedin.com/jobs/search` row is intentionally skipped because it is an aggregator search rather than LinkedIn's company-specific career portal, leaving 199 official company portal checks. Company-authorized ATS hosts such as Workday remain allowed.
 
@@ -31,9 +31,9 @@ No Issue, email, or report artifact is created when there are no new relevant jo
 2. Make sure repository **Issues** are enabled under **Settings → General → Features**.
 3. Make sure GitHub Actions is enabled. Organization policy must allow the workflow's `issues: write` permission.
 4. Commit and push the workflow to the repository's default branch. Scheduled workflows only run from the default branch.
-5. Open **Actions → Hourly Official Career Job Monitor → Run workflow** for the first test.
+5. Open **Actions → Four-Hourly Official Career Job Monitor → Run workflow** for the first test.
 
-The schedule is `17 * * * *`: once per hour at minute 17. GitHub uses UTC for this expression, but because it runs every hour the timezone does not change its frequency. GitHub can delay scheduled runs during periods of high load.
+The schedule is `17 */4 * * *`: every four hours at minute 17, starting at 00:17 UTC. In India, the expected daily run times are approximately 01:47, 05:47, 09:47, 13:47, 17:47, and 21:47 IST. GitHub can delay scheduled runs during periods of high load.
 
 The first successful run starts with an empty ledger and can report currently open matching jobs. Later runs report only newly detected matches.
 
@@ -57,7 +57,7 @@ If no SMTP secrets are supplied, GitHub Issue notification remains active.
 
 `data/state.json` stores hashes of jobs that were successfully reported. The workflow restores the newest state through an `actions/cache` prefix and saves a new immutable cache entry after each successful run. Workflow concurrency prevents overlapping scans from racing on state.
 
-GitHub cache is practical but not permanent storage. Active hourly use keeps it warm; if all caches are deleted or expire, currently open matching jobs may be reported once again. A dedicated state branch or external database can be added later if permanent history is required.
+GitHub cache is practical but not permanent storage. Regular scheduled use keeps it warm; if all caches are deleted or expire, currently open matching jobs may be reported once again. A dedicated state branch or external database can be added later if permanent history is required.
 
 ## Local validation
 
