@@ -4,8 +4,10 @@ import { config } from './config.js';
 import { writeCoverage } from './coverage.js';
 import { createCrawler } from './crawler.js';
 import { matchJob } from './matcher.js';
+import { enqueueMatches, markDelivered, notificationCandidates, pruneState, selectNotificationBatch } from './notification-queue.js';
 import { notify } from './notify.js';
 import { isAllowedOfficialPortal } from './portal-policy.js';
+import { recordPortalHealth, selectCompaniesForMode } from './run-mode.js';
 import { jobKey, loadState, saveState } from './state.js';
 import { readCompanies } from './workbook.js';
 
@@ -45,16 +47,20 @@ async function main() {
   const runStarted = Date.now();
   const workbookCompanies = readCompanies(config.workbookPath);
   const excludedPortals = workbookCompanies.filter((company) => !isAllowedOfficialPortal(company));
-  let companies = workbookCompanies.filter(isAllowedOfficialPortal);
-  if (companyFilter) companies = companies.filter((item) => item.company.toLowerCase().includes(companyFilter.toLowerCase()));
+  const officialCompanies = workbookCompanies.filter(isAllowedOfficialPortal);
+  const loadedState = loadState(config.dataDir);
+  const state = dryRun ? structuredClone(loadedState) : loadedState;
+  let companies = companyFilter
+    ? officialCompanies.filter((item) => item.company.toLowerCase().includes(companyFilter.toLowerCase()))
+    : selectCompaniesForMode(officialCompanies, state, { mode: config.runMode, maxCompanies: config.maxFastCompanies });
   if (config.maxCompanies) companies = companies.slice(0, config.maxCompanies);
   if (!companies.length) throw new Error('No companies matched the workbook and command-line filters');
 
-  const state = loadState(config.dataDir);
   if (state.meta?.recovery) logLine(`State notice: ${state.meta.recovery.type}: ${state.meta.recovery.message}`);
   const crawler = await createCrawler(config);
   for (const portal of excludedPortals) logLine(`Skipped non-official generic job board: ${portal.company} (${portal.portalUrl})`);
-  logLine(`Run started: ${companies.length} official company portals${dryRun ? ' (dry run)' : ''}`);
+  const skippedByMode = officialCompanies.length - companies.length;
+  logLine(`${config.runMode === 'fast' ? 'Fast' : 'Full'} run started: ${companies.length} official company portals${skippedByMode ? `; ${skippedByMode} deferred to the daily full scan` : ''}${dryRun ? ' (dry run)' : ''}`);
 
   let crawled;
   try {
@@ -69,6 +75,7 @@ async function main() {
   }
 
   const coverage = crawled.map((item) => item.coverage);
+  recordPortalHealth(state, coverage);
   const evaluated = [];
   for (let portalIndex = 0; portalIndex < crawled.length; portalIndex++) {
     const portal = crawled[portalIndex];
@@ -87,19 +94,27 @@ async function main() {
   const accepted = evaluated.filter(({ result }) => result.matched)
     .map(({ job, result }) => ({ ...job, ...result, key: jobKey(job) }));
   const uniqueAccepted = accepted.filter((job, index, all) => all.findIndex((candidate) => candidate.key === job.key) === index);
-  const matches = uniqueAccepted.filter((job) => !state.notified[job.key]).sort((a, b) => {
-    const priority = { high: 3, medium: 2, low: 1 };
-    return (priority[b.priority?.toLowerCase()] || 0) - (priority[a.priority?.toLowerCase()] || 0) || b.score - a.score;
-  });
-  const duplicatesSuppressed = uniqueAccepted.length - matches.length;
-  const coverageOutput = writeCoverage(config.reportsDir, coverage, { notified: dryRun ? 0 : matches.length, duplicatesSuppressed });
+  const duplicatesSuppressed = accepted.length - uniqueAccepted.length + uniqueAccepted.filter((job) => state.notified[job.key]).length;
+  enqueueMatches(state, uniqueAccepted);
+  pruneState(state, { pendingDays: config.pendingRetentionDays });
+  const eligibleMatches = notificationCandidates(state, { mode: config.runMode, fastMinimumScore: config.fastMinimumScore });
+  const matches = selectNotificationBatch(state, { mode: config.runMode, fastMinimumScore: config.fastMinimumScore, limit: config.notificationLimit });
+  const deferredMatches = Object.keys(state.pending).length - matches.length;
+  const coverageOutput = writeCoverage(config.reportsDir, coverage, { notified: 0, duplicatesSuppressed });
   const failures = coverage.filter((item) => ['blocked', 'broken', 'unsupported'].includes(item.status));
   fs.writeFileSync(path.join(config.logsDir, 'last-errors.json'), `${JSON.stringify(failures, null, 2)}\n`, 'utf8');
 
   const commonResult = {
     companiesChecked: companies.length,
+    officialPortals: officialCompanies.length,
+    skippedByMode,
+    runMode: config.runMode,
     excludedPortals: excludedPortals.length,
     newMatches: matches.length,
+    eligibleMatches: eligibleMatches.length,
+    deferredMatches,
+    pendingMatches: deferredMatches,
+    notificationLimit: config.notificationLimit,
     portalErrors: coverageOutput.summary.blocked + coverageOutput.summary.broken,
     durationMs: Date.now() - runStarted,
     coverage: coverageOutput.summary,
@@ -109,26 +124,27 @@ async function main() {
   };
 
   if (dryRun) {
-    logLine(`Dry run complete: ${matches.length} relevant matches; ${coverageOutput.summary.jobsDiscovered} discovered; ${coverageOutput.summary.detailsParsed} parsed; state and notifications unchanged`);
+    logLine(`Dry run complete: ${matches.length} notification candidates; ${deferredMatches} deferred; ${coverageOutput.summary.jobsDiscovered} discovered; ${coverageOutput.summary.detailsParsed} parsed; state and notifications unchanged`);
     for (const job of matches) console.log(`MATCH ${job.company} | ${job.title} | ${job.location} | ${job.url}`);
     writeRunResult({ status: 'dry-run', ...commonResult });
     return;
   }
 
   if (!matches.length) {
-    logLine(`Run complete: no new relevant jobs; no notification sent; ${failures.length} unsupported/blocked/broken portals`);
-    writeRunResult({ status: 'no-new-matches', ...commonResult });
+    saveState(config.dataDir, state);
+    const status = Object.keys(state.pending).length ? 'deferred-only' : 'no-new-matches';
+    logLine(`Run complete: no jobs eligible for this notification tier; ${Object.keys(state.pending).length} pending; ${failures.length} unsupported/blocked/broken portals`);
+    writeRunResult({ status, ...commonResult });
     return;
   }
 
   try {
     const delivery = await notify(matches, config);
     const now = new Date().toISOString();
-    for (const job of matches) state.notified[job.key] = { company: job.company, title: job.title, url: job.url, jobId: job.jobId || '', notifiedAt: now };
-    const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
-    for (const [key, value] of Object.entries(state.notified)) if (Date.parse(value.notifiedAt) < cutoff) delete state.notified[key];
-    state.meta.lastSuccessfulNotificationAt = now;
+    markDelivered(state, matches, now);
+    pruneState(state, { pendingDays: config.pendingRetentionDays });
     saveState(config.dataDir, state);
+    commonResult.coverage = writeCoverage(config.reportsDir, coverage, { notified: matches.length, duplicatesSuppressed }).summary;
     const destinations = [delivery.githubIssueUrl, delivery.emailSent ? 'email' : ''].filter(Boolean).join(', ');
     logLine(`Notification created for ${matches.length} new jobs${destinations ? ` (${destinations})` : ''}`);
     for (const warning of delivery.warnings) logLine(`Notification warning: ${warning}`);

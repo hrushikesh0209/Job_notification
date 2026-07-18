@@ -165,6 +165,7 @@ export async function createCrawler(config, dependencies = {}) {
   }
 
   async function browserExtract(company, url) {
+    if (config.browserEnabled === false) throw new Error('Browser fallback disabled in fast mode');
     if (dependencies.browserExtract) return dependencies.browserExtract(company, url);
     return browserGate.use(async () => {
       try {

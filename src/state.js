@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const STATE_SCHEMA_VERSION = 2;
+export const STATE_SCHEMA_VERSION = 3;
 
 export function canonicalJobUrl(value) {
   try {
@@ -37,12 +37,14 @@ export function jobKey(job) {
 }
 
 function freshState(recovery = null) {
-  return { version: STATE_SCHEMA_VERSION, notified: {}, meta: { recovery } };
+  return { version: STATE_SCHEMA_VERSION, notified: {}, pending: {}, portalHealth: {}, meta: { recovery } };
 }
 
 function validate(parsed) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('state root must be an object');
   if (parsed.notified != null && (typeof parsed.notified !== 'object' || Array.isArray(parsed.notified))) throw new Error('state.notified must be an object');
+  if (parsed.pending != null && (typeof parsed.pending !== 'object' || Array.isArray(parsed.pending))) throw new Error('state.pending must be an object');
+  if (parsed.portalHealth != null && (typeof parsed.portalHealth !== 'object' || Array.isArray(parsed.portalHealth))) throw new Error('state.portalHealth must be an object');
 }
 
 export function loadState(dataDir) {
@@ -53,6 +55,8 @@ export function loadState(dataDir) {
     return {
       version: STATE_SCHEMA_VERSION,
       notified: parsed.notified || {},
+      pending: parsed.pending || {},
+      portalHealth: parsed.portalHealth || {},
       meta: {
         ...(parsed.meta || {}),
         migratedFrom: parsed.version && parsed.version !== STATE_SCHEMA_VERSION ? parsed.version : undefined,
@@ -75,6 +79,8 @@ export function saveState(dataDir, state) {
   const normalized = {
     version: STATE_SCHEMA_VERSION,
     notified: state.notified || {},
+    pending: state.pending || {},
+    portalHealth: state.portalHealth || {},
     meta: { ...(state.meta || {}), savedAt: new Date().toISOString(), recovery: null },
   };
   fs.writeFileSync(temp, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');

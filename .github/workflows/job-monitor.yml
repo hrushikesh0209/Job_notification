@@ -2,8 +2,19 @@ name: Four-Hourly Official Career Job Monitor
 
 on:
   schedule:
-    - cron: "17 */4 * * *"
+    # Full scan at 05:47 IST; fast scans preserve the four-hour cadence.
+    - cron: "17 0 * * *"
+    - cron: "17 4,8,12,16,20 * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Scan mode
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - fast
 
 permissions:
   contents: read
@@ -17,20 +28,23 @@ jobs:
   monitor:
     name: Check official company career portals
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 35
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CONCURRENCY: "4"
       PER_DOMAIN_CONCURRENCY: "2"
       BROWSER_CONCURRENCY: "1"
       DETAIL_CONCURRENCY: "4"
-      REQUEST_TIMEOUT_MS: "20000"
       BROWSER_TIMEOUT_MS: "25000"
       REQUEST_RETRIES: "2"
       MAX_PAGES_PER_PORTAL: "5"
       MAX_GENERIC_PAGES: "3"
       MAX_JOBS_PER_PORTAL: "150"
       MAX_DETAIL_JOBS_PER_PORTAL: "80"
+      MAX_FAST_COMPANIES: "60"
+      FAST_MINIMUM_SCORE: "75"
+      NOTIFICATION_LIMIT: "30"
+      PENDING_RETENTION_DAYS: "14"
       SMTP_HOST: ${{ secrets.SMTP_HOST }}
       SMTP_PORT: ${{ secrets.SMTP_PORT }}
       SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
@@ -49,16 +63,41 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - name: Select free-plan scan mode
+        id: mode
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            mode="${{ inputs.mode }}"
+          elif [[ "${{ github.event.schedule }}" == "17 0 * * *" ]]; then
+            mode="full"
+          else
+            mode="fast"
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "MONITOR_MODE=$mode" >> "$GITHUB_ENV"
+          if [[ "$mode" == "fast" ]]; then
+            echo "BROWSER_ENABLED=false" >> "$GITHUB_ENV"
+            echo "NOTIFICATION_LIMIT=15" >> "$GITHUB_ENV"
+            echo "REQUEST_TIMEOUT_MS=12000" >> "$GITHUB_ENV"
+          else
+            echo "BROWSER_ENABLED=true" >> "$GITHUB_ENV"
+            echo "NOTIFICATION_LIMIT=30" >> "$GITHUB_ENV"
+            echo "REQUEST_TIMEOUT_MS=20000" >> "$GITHUB_ENV"
+          fi
+
       - name: Install Node.js dependencies
         run: npm ci
 
       - name: Cache Playwright Chromium
+        if: steps.mode.outputs.mode == 'full'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
       - name: Install Chromium and system dependencies
+        if: steps.mode.outputs.mode == 'full'
         run: npx playwright-core install --with-deps chromium
 
       - name: Restore duplicate-notification state
@@ -66,8 +105,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data/state.json
-          key: job-monitor-state-v2-${{ github.ref_name }}-${{ github.run_id }}
+          key: job-monitor-state-v3-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
+            job-monitor-state-v3-${{ github.ref_name }}-
             job-monitor-state-v2-${{ github.ref_name }}-
 
       - name: Run job monitor
@@ -79,7 +119,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: data/state.json
-          key: job-monitor-state-v2-${{ github.ref_name }}-${{ github.run_id }}
+          key: job-monitor-state-v3-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Publish workflow summary
         id: result
@@ -87,16 +127,16 @@ jobs:
         run: node src/action-summary.js
 
       - name: Upload new-job reports
-        if: steps.result.outputs.matches != '0'
+        if: success() && steps.result.outputs.matches != '0'
         uses: actions/upload-artifact@v4
         with:
           name: new-job-reports-${{ github.run_id }}
           path: reports/
-          retention-days: 30
+          retention-days: 7
           if-no-files-found: error
 
       - name: Upload portal coverage report
-        if: always()
+        if: always() && (steps.mode.outputs.mode == 'full' || failure())
         uses: actions/upload-artifact@v4
         with:
           name: portal-coverage-${{ github.run_id }}
@@ -105,7 +145,8 @@ jobs:
             reports/coverage.csv
             logs/last-errors.json
             data/run-result.json
-          retention-days: 30
+            data/state.json
+          retention-days: 7
           if-no-files-found: warn
 
       - name: Upload failure diagnostics
@@ -116,5 +157,5 @@ jobs:
           path: |
             logs/
             data/run-result.json
-          retention-days: 14
+          retention-days: 7
           if-no-files-found: ignore

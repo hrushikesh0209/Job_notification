@@ -60,6 +60,16 @@ test('dynamic portal uses one browser fallback and records its retrieval method'
   assert.equal(result.jobs.length, 1);
 });
 
+test('fast mode never invokes browser rendering', async () => {
+  let renders = 0;
+  const http = { async request(url) { return { status: 200, finalUrl: url, text: '<main id="app"></main>' }; } };
+  const crawler = await createCrawler({ ...config, browserEnabled: false }, { http, browserExtract: async () => { renders++; return {}; } });
+  const result = await crawler.crawl(company);
+  assert.equal(renders, 0);
+  assert.equal(result.jobs.length, 0);
+  assert.match(result.coverage.errors.join(' '), /Browser fallback disabled in fast mode/);
+});
+
 test('one broken portal does not poison a following successful portal', async () => {
   const good = { company: 'Good', portalUrl: 'https://careers.good.example/jobs' };
   const bad = { company: 'Bad', portalUrl: 'https://careers.bad.example/jobs' };

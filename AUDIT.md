@@ -83,7 +83,13 @@ Apple, Adobe, Atlassian, Walmart Global Tech, Flipkart, Samsung, Oracle, SAP, My
 
 ## Runtime and deployment estimate
 
-The final local scan took 944 seconds (15m 44s). Allowing roughly 2-5 minutes for checkout, npm install, and Chromium/system dependency setup plus network variance, expected `ubuntu-latest` runtime is approximately 18-30 minutes. The existing 55-minute job timeout and four-hour schedule are retained.
+The final local scan took 944 seconds (15m 44s). Allowing roughly 2-5 minutes for checkout, npm install, and Chromium/system dependency setup plus network variance, expected `ubuntu-latest` runtime is approximately 18-30 minutes.
+
+## GitHub Free optimization addendum (2026-07-18)
+
+The production schedule now preserves a run every four hours but performs one full scan at `00:17 UTC` and five browser-free fast scans at the remaining four-hour slots. The fast tier is seeded from measured non-browser successes and adapts from compact portal-health state. A controlled network-enabled fast dry run attempted 45 portals in 106.7 seconds: 23 working, 10 partially working, 12 broken, 1,151 jobs discovered, 1,095 details parsed, six accepted, four high-confidence notification candidates, and two borderline matches deferred to the daily full tier.
+
+Fast notifications are capped at 15 and the full daily batch at 30. Overflow is stored for up to 14 days without job descriptions. Full coverage/state artifacts, match reports, and failure diagnostics now retain for seven days; normal fast coverage is kept in the workflow summary only. Chromium installation and its cache step are skipped for fast runs. Based on measured local runtimes plus Actions setup/network allowance, projected private GitHub Free usage is approximately 1,000-1,800 minutes per month rather than roughly 3,600+ minutes for six full scans per day. The job timeout is now 35 minutes.
 
 ## Diagnostic artifacts
 
@@ -92,7 +98,7 @@ The final local scan took 944 seconds (15m 44s). Allowing roughly 2-5 minutes fo
 - `logs/last-errors.json` — unsupported, blocked, and broken portals.
 - `data/run-result.json` — final summary used by GitHub Actions.
 
-These are generated runtime files and remain gitignored; the workflow uploads them on every run.
+These are generated runtime files and remain gitignored. The workflow uploads them for daily full scans, notification batches, and failed runs; ordinary successful fast scans use the GitHub summary only.
 
 ## Exact source files changed
 
@@ -110,14 +116,18 @@ These are generated runtime files and remain gitignored; the workflow uploads th
 - `src/index.js`
 - `src/job-utils.js`
 - `src/matcher.js`
+- `src/notification-queue.js`
 - `src/platform.js`
+- `src/run-mode.js`
 - `src/state.js`
 - `test/adapters.test.js`
 - `test/coverage.test.js`
 - `test/crawler.test.js`
 - `test/http-client.test.js`
 - `test/matcher.test.js`
+- `test/notification-queue.test.js`
 - `test/platform.test.js`
+- `test/run-mode.test.js`
 - `test/state.test.js`
 
 No workbook, secrets, or GitHub credentials were modified. Nothing was committed or pushed.

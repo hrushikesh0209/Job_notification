@@ -6,7 +6,7 @@ The workbook contains 200 rows. The generic LinkedIn search row is intentionally
 
 ## Retrieval pipeline
 
-Each run performs:
+Each full run performs:
 
 1. Workbook loading and official-portal policy validation.
 2. ATS detection for Workday, Greenhouse, Lever, SmartRecruiters, Eightfold, SuccessFactors, Oracle Recruiting, Taleo, iCIMS, Phenom, and custom sites.
@@ -45,24 +45,34 @@ Every rejection has a structured reason code such as `TITLE_NOT_TARGET`, `LOCATI
 - `data/state.json` is schema-versioned, written atomically, and recovers a corrupt file to a timestamped backup.
 - A cache miss is visible and cannot suppress jobs.
 - Jobs are added to state only after at least one configured notification channel succeeds.
+- Unsent overflow is retained for 14 days using only compact notification fields; full descriptions and hard rejections are not stored in state.
+- Portal health learned by full scans keeps temporary failures and browser-only portals out of later fast scans until they recover.
 - Failed scans and failed notifications do not overwrite a good ledger.
 
 ## Notifications and artifacts
 
-New matches create one GitHub Issue through `GITHUB_TOKEN`; SMTP email is optional. No notification is sent when there are no new matches. Secrets are read only from environment variables and are never written to logs, reports, or summaries.
+New matches create one GitHub Issue through `GITHUB_TOKEN`; SMTP email is optional. Fast runs send at most 15 high-confidence matches (score 75 or above). The daily full run includes borderline matches and sends at most 30. Remaining matches stay in the compact pending queue instead of creating a huge email. No notification is sent when there are no eligible matches. Secrets are read only from environment variables and are never written to logs, reports, or summaries.
 
-Every run uploads `portal-coverage-<run id>` containing:
+The daily full run, and any failed run, uploads `portal-coverage-<run id>` with seven-day retention containing:
 
 - `reports/coverage.json`
 - `reports/coverage.csv`
 - `logs/last-errors.json`
 - `data/run-result.json`
+- `data/state.json` as a compact recovery backup
 
-New-match HTML and Markdown reports are uploaded separately. The workflow summary shows status totals, discovery/parsing/filtering counts, rejection reasons, state recovery, and the slowest portals.
+New-match HTML and Markdown reports are uploaded separately with seven-day retention. Successful fast runs without notifications publish only the GitHub summary, avoiding 150 unnecessary coverage artifacts per month. The summary shows status totals, discovery/parsing/filtering counts, rejection reasons, state recovery, pending jobs, and the slowest portals.
 
 ## GitHub Actions
 
-The schedule remains `17 */4 * * *` on `ubuntu-latest`, with a 55-minute job timeout and overlap protection. State cache keys are branch-scoped and schema-versioned.
+The four-hour cadence remains on `ubuntu-latest`, split into two workload tiers:
+
+- `17 0 * * *`: one daily full scan of all 199 official portals, including the shared Chromium fallback.
+- `17 4,8,12,16,20 * * *`: five fast scans of up to 60 measured API/static portals, without installing or launching Chromium.
+
+The job timeout is 35 minutes and overlap protection remains enabled. State cache keys are branch-scoped and schema-versioned; version 3 can restore the previous version 2 ledger during migration.
+
+The controlled fast diagnostic checked 45 portals in 1 minute 47 seconds locally, discovered 1,151 jobs, parsed 1,095, and classified 33 portals as working or partially working. Combined with the measured 15 minute 44 second local full scan, expected private GitHub Free usage is approximately 1,000-1,800 runner minutes per month, including setup/network allowance. Public repositories do not consume the included standard-runner minute quota, but this tiering still reduces portal load and artifact storage. If the rolling Actions average approaches 1,800 minutes, reduce `MAX_FAST_COMPANIES` before reducing the four-hour cadence.
 
 Enable repository Issues and allow the workflow's `issues: write` permission. Optional SMTP secrets are:
 

@@ -21,6 +21,8 @@ test('two consecutive simulated runs suppress only successfully recorded jobs', 
   saveState(dir, first);
   const second = loadState(dir);
   assert.ok(second.notified[jobKey(job)]);
+  assert.deepEqual(second.pending, {});
+  assert.deepEqual(second.portalHealth, {});
   assert.equal(second.version, STATE_SCHEMA_VERSION);
 });
 
@@ -32,4 +34,18 @@ test('cache miss is explicit and corrupted state is backed up and recovered', ()
   assert.equal(recovered.meta.recovery.type, 'corrupt-state');
   assert.equal(fs.existsSync(recovered.meta.recovery.backup), true);
   assert.deepEqual(recovered.notified, {});
+});
+
+test('version 2 cache migration preserves notified jobs and initializes compact queues', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'job-state-'));
+  fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify({
+    version: 2,
+    notified: { existing: { notifiedAt: '2026-07-18T00:00:00Z' } },
+    meta: {},
+  }), 'utf8');
+  const migrated = loadState(dir);
+  assert.ok(migrated.notified.existing);
+  assert.deepEqual(migrated.pending, {});
+  assert.deepEqual(migrated.portalHealth, {});
+  assert.equal(migrated.meta.migratedFrom, 2);
 });
