@@ -94,11 +94,13 @@ async function main() {
   const accepted = evaluated.filter(({ result }) => result.matched)
     .map(({ job, result }) => ({ ...job, ...result, key: jobKey(job) }));
   const uniqueAccepted = accepted.filter((job, index, all) => all.findIndex((candidate) => candidate.key === job.key) === index);
-  const duplicatesSuppressed = accepted.length - uniqueAccepted.length + uniqueAccepted.filter((job) => state.notified[job.key]).length;
-  enqueueMatches(state, uniqueAccepted);
+  const duplicatesSuppressed = accepted.length - uniqueAccepted.length
+    + (config.replayNotified ? 0 : uniqueAccepted.filter((job) => state.notified[job.key]).length);
   pruneState(state, { pendingDays: config.pendingRetentionDays });
-  const eligibleMatches = notificationCandidates(state, { mode: config.runMode, fastMinimumScore: config.fastMinimumScore });
-  const matches = selectNotificationBatch(state, { mode: config.runMode, fastMinimumScore: config.fastMinimumScore, limit: config.notificationLimit });
+  enqueueMatches(state, uniqueAccepted, new Date().toISOString(), { replayNotified: config.replayNotified });
+  const notificationOptions = { mode: config.runMode, fastMinimumScore: config.fastMinimumScore, replayNotified: config.replayNotified };
+  const eligibleMatches = notificationCandidates(state, notificationOptions);
+  const matches = selectNotificationBatch(state, { ...notificationOptions, limit: config.notificationLimit });
   const deferredMatches = Object.keys(state.pending).length - matches.length;
   const coverageOutput = writeCoverage(config.reportsDir, coverage, { notified: 0, duplicatesSuppressed });
   const failures = coverage.filter((item) => ['blocked', 'broken', 'unsupported'].includes(item.status));
@@ -109,6 +111,7 @@ async function main() {
     officialPortals: officialCompanies.length,
     skippedByMode,
     runMode: config.runMode,
+    replayNotified: config.replayNotified,
     excludedPortals: excludedPortals.length,
     newMatches: matches.length,
     eligibleMatches: eligibleMatches.length,

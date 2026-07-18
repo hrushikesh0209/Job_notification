@@ -46,6 +46,7 @@ export const config = {
   browserEnabled: bool('BROWSER_ENABLED', runMode !== 'fast'),
   notificationLimit: Math.max(1, Math.min(100, int('NOTIFICATION_LIMIT', runMode === 'fast' ? 15 : 30))),
   fastMinimumScore: Math.max(0, Math.min(100, int('FAST_MINIMUM_SCORE', 75))),
+  replayNotified: bool('REPLAY_NOTIFIED', false),
   pendingRetentionDays: Math.max(1, Math.min(30, int('PENDING_RETENTION_DAYS', 14))),
   browserExecutable: process.env.BROWSER_EXECUTABLE || '',
   githubActions,

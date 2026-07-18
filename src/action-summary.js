@@ -15,6 +15,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     '# Official career job monitor', '',
     `- Status: **${result.status || 'unknown'}**`,
     `- Scan mode: **${result.runMode || 'unknown'}**`,
+    `- One-time duplicate replay: **${result.replayNotified ? 'enabled' : 'disabled'}**`,
     `- Portals attempted: **${Number(result.companiesChecked) || 0}**`,
     `- Portals deferred to daily full scan: **${Number(result.skippedByMode) || 0}**`,
     `- Working / partial / confirmed empty: **${coverage.working || 0} / ${coverage.partiallyWorking || 0} / ${coverage.empty || 0}**`,

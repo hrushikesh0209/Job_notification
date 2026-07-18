@@ -30,3 +30,17 @@ test('only delivered jobs become notified and queue retention removes stale over
   pruneState(state, { now: Date.parse('2026-07-18T00:00:00Z'), pendingDays: 14 });
   assert.equal(state.pending.overflow, undefined);
 });
+
+test('one-time replay includes a notified job once without weakening later suppression', () => {
+  const replayed = job('replayed', 88);
+  const state = { notified: { replayed: { notifiedAt: '2026-07-17T00:00:00Z' } }, pending: {} };
+  enqueueMatches(state, [replayed], '2026-07-18T00:00:00Z');
+  assert.deepEqual(state.pending, {});
+
+  enqueueMatches(state, [replayed], '2026-07-18T00:00:00Z', { replayNotified: true });
+  assert.deepEqual(notificationCandidates(state, { mode: 'full' }), []);
+  assert.deepEqual(notificationCandidates(state, { mode: 'full', replayNotified: true }).map((item) => item.key), ['replayed']);
+
+  markDelivered(state, [state.pending.replayed], '2026-07-18T01:00:00Z');
+  assert.deepEqual(notificationCandidates(state, { mode: 'full' }), []);
+});

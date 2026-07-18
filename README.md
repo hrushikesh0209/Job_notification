@@ -53,6 +53,8 @@ Every rejection has a structured reason code such as `TITLE_NOT_TARGET`, `LOCATI
 
 New matches create one GitHub Issue through `GITHUB_TOKEN`; SMTP email is optional. Fast runs send at most 15 high-confidence matches (score 75 or above). The daily full run includes borderline matches and sends at most 30. Remaining matches stay in the compact pending queue instead of creating a huge email. No notification is sent when there are no eligible matches. Secrets are read only from environment variables and are never written to logs, reports, or summaries.
 
+For a deliberate one-time catch-up, manually dispatch `full` mode with **One-time replay of currently accepted jobs already in the notified ledger** enabled. This bypasses the ledger only for that manual run; successful delivery refreshes those identities and every later scheduled or manual run defaults back to duplicate suppression. Do not clear the Actions cache for this purpose.
+
 The daily full run, and any failed run, uploads `portal-coverage-<run id>` with seven-day retention containing:
 
 - `reports/coverage.json`

@@ -22,10 +22,10 @@ function compactJob(job, firstSeenAt) {
   };
 }
 
-export function enqueueMatches(state, jobs, now = new Date().toISOString()) {
+export function enqueueMatches(state, jobs, now = new Date().toISOString(), options = {}) {
   state.pending ||= {};
   for (const job of jobs) {
-    if (!job.key || state.notified?.[job.key]) continue;
+    if (!job.key || (state.notified?.[job.key] && !options.replayNotified)) continue;
     const firstSeenAt = state.pending[job.key]?.firstSeenAt || now;
     state.pending[job.key] = compactJob(job, firstSeenAt);
   }
@@ -50,7 +50,7 @@ export function notificationCandidates(state, options = {}) {
   const minimumScore = options.mode === 'fast' ? options.fastMinimumScore ?? 75 : 0;
   const priority = { high: 3, medium: 2, low: 1 };
   return Object.values(state.pending || {})
-    .filter((job) => !state.notified?.[job.key] && job.score >= minimumScore)
+    .filter((job) => (options.replayNotified || !state.notified?.[job.key]) && job.score >= minimumScore)
     .sort((a, b) =>
       (priority[String(b.priority).toLowerCase()] || 0) - (priority[String(a.priority).toLowerCase()] || 0)
       || b.score - a.score

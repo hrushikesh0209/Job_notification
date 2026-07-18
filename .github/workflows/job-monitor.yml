@@ -15,6 +15,11 @@ on:
         options:
           - full
           - fast
+      replay_notified:
+        description: One-time replay of currently accepted jobs already in the notified ledger
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -67,8 +72,10 @@ jobs:
         id: mode
         shell: bash
         run: |
+          replay_notified="false"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             mode="${{ inputs.mode }}"
+            replay_notified="${{ inputs.replay_notified }}"
           elif [[ "${{ github.event.schedule }}" == "17 0 * * *" ]]; then
             mode="full"
           else
@@ -76,6 +83,7 @@ jobs:
           fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "MONITOR_MODE=$mode" >> "$GITHUB_ENV"
+          echo "REPLAY_NOTIFIED=$replay_notified" >> "$GITHUB_ENV"
           if [[ "$mode" == "fast" ]]; then
             echo "BROWSER_ENABLED=false" >> "$GITHUB_ENV"
             echo "NOTIFICATION_LIMIT=15" >> "$GITHUB_ENV"
