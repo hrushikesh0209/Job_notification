@@ -91,6 +91,8 @@ The production schedule now preserves a run every four hours but performs one fu
 
 Fast notifications are capped at 15 and the full daily batch at 30. Overflow is stored for up to 14 days without job descriptions. Full coverage/state artifacts, match reports, and failure diagnostics now retain for seven days; normal fast coverage is kept in the workflow summary only. Chromium installation and its cache step are skipped for fast runs. Based on measured local runtimes plus Actions setup/network allowance, projected private GitHub Free usage is approximately 1,000-1,800 minutes per month rather than roughly 3,600+ minutes for six full scans per day. The job timeout is now 35 minutes.
 
+An additional recap-only schedule runs at `17:45 UTC` (23:15 IST). Successfully delivered jobs are held in a compact `Asia/Kolkata` date bucket for at most three days, deduplicated by stable job identity, capped at 30 in the recap, and cleared only after recap delivery succeeds. This run performs no crawling or browser installation and adds only dependency setup plus notification time to the monthly Actions budget.
+
 ## Diagnostic artifacts
 
 - `reports/coverage.json` — complete machine-readable company report and aggregate summary.
@@ -112,11 +114,13 @@ These are generated runtime files and remain gitignored. The workflow uploads th
 - `src/config.js`
 - `src/coverage.js`
 - `src/crawler.js`
+- `src/digest.js`
 - `src/http-client.js`
 - `src/index.js`
 - `src/job-utils.js`
 - `src/matcher.js`
 - `src/notification-queue.js`
+- `src/notify.js`
 - `src/platform.js`
 - `src/run-mode.js`
 - `src/state.js`
@@ -126,8 +130,9 @@ These are generated runtime files and remain gitignored. The workflow uploads th
 - `test/http-client.test.js`
 - `test/matcher.test.js`
 - `test/notification-queue.test.js`
+- `test/notify.test.js`
 - `test/platform.test.js`
 - `test/run-mode.test.js`
 - `test/state.test.js`
 
-No workbook, secrets, or GitHub credentials were modified. Nothing was committed or pushed.
+No workbook, secrets, or GitHub credentials were modified. Validated changes are published on the `version-1` branch.

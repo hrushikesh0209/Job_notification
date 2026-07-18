@@ -66,3 +66,26 @@ test('GitHub Issue delivery succeeds and returns the Issue URL', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('India EOD digest uses recap-specific report and GitHub Issue labels', async () => {
+  const reportsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'job-monitor-notify-'));
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url, options };
+    return new Response(JSON.stringify({ html_url: 'https://github.com/acme/jobs/issues/8' }), { status: 201 });
+  };
+  try {
+    const result = await notify([job], config(reportsDir, { token: 'test-token', repository: 'acme/jobs' }), {
+      kind: 'daily-digest', digestDate: '2026-07-18', total: 1,
+    });
+    const body = JSON.parse(request.options.body);
+    assert.equal(body.title, '[Job Monitor] India EOD recap - 2026-07-18 - 1 job');
+    assert.match(body.body, /India EOD recap/);
+    assert.match(body.body, /2026-07-18/);
+    assert.equal(fs.existsSync(path.join(reportsDir, 'latest-eod.html')), true);
+    assert.match(path.basename(result.reportPath), /^eod-recap-/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

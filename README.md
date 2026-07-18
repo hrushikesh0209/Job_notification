@@ -46,12 +46,15 @@ Every rejection has a structured reason code such as `TITLE_NOT_TARGET`, `LOCATI
 - A cache miss is visible and cannot suppress jobs.
 - Jobs are added to state only after at least one configured notification channel succeeds.
 - Unsent overflow is retained for 14 days using only compact notification fields; full descriptions and hard rejections are not stored in state.
+- Successfully notified jobs enter a compact three-day recap queue keyed by the `Asia/Kolkata` calendar date; successful EOD delivery clears that date.
 - Portal health learned by full scans keeps temporary failures and browser-only portals out of later fast scans until they recover.
 - Failed scans and failed notifications do not overwrite a good ledger.
 
 ## Notifications and artifacts
 
 New matches create one GitHub Issue through `GITHUB_TOKEN`; SMTP email is optional. Fast runs send at most 15 high-confidence matches (score 75 or above). The daily full run includes borderline matches and sends at most 30. Remaining matches stay in the compact pending queue instead of creating a huge email. No notification is sent when there are no eligible matches. Secrets are read only from environment variables and are never written to logs, reports, or summaries.
+
+At `23:15 IST`, a lightweight recap-only run sends up to 30 jobs successfully notified during that India calendar day. It performs no portal crawl and lists each identity once. The day is cleared only after at least one delivery channel succeeds; jobs from previous days are not replayed by normal scans.
 
 For a deliberate one-time catch-up, manually dispatch `full` mode with **One-time replay of currently accepted jobs already in the notified ledger** enabled. This bypasses the ledger only for that manual run; successful delivery refreshes those identities and every later scheduled or manual run defaults back to duplicate suppression. Do not clear the Actions cache for this purpose.
 
@@ -63,7 +66,7 @@ The daily full run, and any failed run, uploads `portal-coverage-<run id>` with 
 - `data/run-result.json`
 - `data/state.json` as a compact recovery backup
 
-New-match HTML and Markdown reports are uploaded separately with seven-day retention. Successful fast runs without notifications publish only the GitHub summary, avoiding 150 unnecessary coverage artifacts per month. The summary shows status totals, discovery/parsing/filtering counts, rejection reasons, state recovery, pending jobs, and the slowest portals.
+Notification and EOD recap HTML/Markdown reports are uploaded separately with seven-day retention. Successful fast runs without notifications publish only the GitHub summary, avoiding 150 unnecessary coverage artifacts per month. The summary shows status totals, discovery/parsing/filtering counts, rejection reasons, state recovery, pending jobs, and the slowest portals.
 
 ## GitHub Actions
 
@@ -71,8 +74,9 @@ The four-hour cadence remains on `ubuntu-latest`, split into two workload tiers:
 
 - `17 0 * * *`: one daily full scan of all 199 official portals, including the shared Chromium fallback.
 - `17 4,8,12,16,20 * * *`: five fast scans of up to 60 measured API/static portals, without installing or launching Chromium.
+- `45 17 * * *`: one recap-only run at 23:15 IST using the stored India-day queue, without crawling portals or installing Chromium.
 
-The job timeout is 35 minutes and overlap protection remains enabled. State cache keys are branch-scoped and schema-versioned; version 3 can restore the previous version 2 ledger during migration.
+The job timeout is 35 minutes and overlap protection remains enabled. State cache keys are branch-scoped and schema-versioned; version 4 restores version 3/2 ledgers while adding the compact India EOD queue.
 
 The controlled fast diagnostic checked 45 portals in 1 minute 47 seconds locally, discovered 1,151 jobs, parsed 1,095, and classified 33 portals as working or partially working. Combined with the measured 15 minute 44 second local full scan, expected private GitHub Free usage is approximately 1,000-1,800 runner minutes per month, including setup/network allowance. Public repositories do not consume the included standard-runner minute quota, but this tiering still reduces portal load and artifact storage. If the rolling Actions average approaches 1,800 minutes, reduce `MAX_FAST_COMPANIES` before reducing the four-hour cadence.
 

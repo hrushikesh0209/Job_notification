@@ -5,6 +5,8 @@ on:
     # Full scan at 05:47 IST; fast scans preserve the four-hour cadence.
     - cron: "17 0 * * *"
     - cron: "17 4,8,12,16,20 * * *"
+    # Lightweight India end-of-day recap at 23:15 IST.
+    - cron: "45 17 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -15,6 +17,7 @@ on:
         options:
           - full
           - fast
+          - digest
       replay_notified:
         description: One-time replay of currently accepted jobs already in the notified ledger
         required: true
@@ -49,6 +52,7 @@ jobs:
       MAX_FAST_COMPANIES: "60"
       FAST_MINIMUM_SCORE: "75"
       NOTIFICATION_LIMIT: "30"
+      EOD_DIGEST_LIMIT: "30"
       PENDING_RETENTION_DAYS: "14"
       SMTP_HOST: ${{ secrets.SMTP_HOST }}
       SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -76,6 +80,8 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             mode="${{ inputs.mode }}"
             replay_notified="${{ inputs.replay_notified }}"
+          elif [[ "${{ github.event.schedule }}" == "45 17 * * *" ]]; then
+            mode="digest"
           elif [[ "${{ github.event.schedule }}" == "17 0 * * *" ]]; then
             mode="full"
           else
@@ -88,6 +94,10 @@ jobs:
             echo "BROWSER_ENABLED=false" >> "$GITHUB_ENV"
             echo "NOTIFICATION_LIMIT=15" >> "$GITHUB_ENV"
             echo "REQUEST_TIMEOUT_MS=12000" >> "$GITHUB_ENV"
+          elif [[ "$mode" == "digest" ]]; then
+            echo "BROWSER_ENABLED=false" >> "$GITHUB_ENV"
+            echo "NOTIFICATION_LIMIT=30" >> "$GITHUB_ENV"
+            echo "REQUEST_TIMEOUT_MS=10000" >> "$GITHUB_ENV"
           else
             echo "BROWSER_ENABLED=true" >> "$GITHUB_ENV"
             echo "NOTIFICATION_LIMIT=30" >> "$GITHUB_ENV"
@@ -113,38 +123,45 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data/state.json
-          key: job-monitor-state-v3-${{ github.ref_name }}-${{ github.run_id }}
+          key: job-monitor-state-v4-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
+            job-monitor-state-v4-${{ github.ref_name }}-
             job-monitor-state-v3-${{ github.ref_name }}-
             job-monitor-state-v2-${{ github.ref_name }}-
 
       - name: Run job monitor
         id: monitor
-        run: node src/index.js
+        shell: bash
+        run: |
+          if [[ "${{ steps.mode.outputs.mode }}" == "digest" ]]; then
+            node src/digest.js
+          else
+            node src/index.js
+          fi
 
       - name: Save duplicate-notification state
         if: success() && hashFiles('data/state.json') != ''
         uses: actions/cache/save@v4
         with:
           path: data/state.json
-          key: job-monitor-state-v3-${{ github.ref_name }}-${{ github.run_id }}
+          key: job-monitor-state-v4-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Publish workflow summary
         id: result
         if: always()
         run: node src/action-summary.js
 
-      - name: Upload new-job reports
+      - name: Upload notification reports
         if: success() && steps.result.outputs.matches != '0'
         uses: actions/upload-artifact@v4
         with:
-          name: new-job-reports-${{ github.run_id }}
+          name: notification-reports-${{ github.run_id }}
           path: reports/
           retention-days: 7
           if-no-files-found: error
 
       - name: Upload portal coverage report
-        if: always() && (steps.mode.outputs.mode == 'full' || failure())
+        if: always() && (steps.mode.outputs.mode == 'full' || (failure() && steps.mode.outputs.mode != 'digest'))
         uses: actions/upload-artifact@v4
         with:
           name: portal-coverage-${{ github.run_id }}

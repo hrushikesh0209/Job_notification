@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { enqueueMatches, markDelivered, notificationCandidates, pruneState, selectNotificationBatch } from '../src/notification-queue.js';
+import {
+  enqueueMatches, indiaDateKey, markDelivered, markDigestDelivered, notificationCandidates,
+  pruneState, selectDigestBatch, selectNotificationBatch,
+} from '../src/notification-queue.js';
 
 function job(key, score, priority = 'Medium') {
   return {
@@ -43,4 +46,27 @@ test('one-time replay includes a notified job once without weakening later suppr
 
   markDelivered(state, [state.pending.replayed], '2026-07-18T01:00:00Z');
   assert.deepEqual(notificationCandidates(state, { mode: 'full' }), []);
+});
+
+test('India calendar dates roll over at midnight IST', () => {
+  assert.equal(indiaDateKey('2026-07-18T18:29:59Z'), '2026-07-18');
+  assert.equal(indiaDateKey('2026-07-18T18:30:00Z'), '2026-07-19');
+});
+
+test('EOD digest selects a capped India-day batch once and clears the entire day after delivery', () => {
+  const state = { notified: {}, pending: {}, digestQueue: {}, meta: {} };
+  const first = job('first', 91, 'High');
+  const second = job('second', 79, 'Medium');
+  markDelivered(state, [first, second], '2026-07-18T17:00:00Z');
+
+  const batch = selectDigestBatch(state, { today: '2026-07-18', limit: 1 });
+  assert.equal(batch.dateKey, '2026-07-18');
+  assert.equal(batch.total, 2);
+  assert.equal(batch.omitted, 1);
+  assert.deepEqual(batch.jobs.map((item) => item.key), ['first']);
+
+  markDigestDelivered(state, batch.dateKey, '2026-07-18T17:45:00Z');
+  assert.deepEqual(state.digestQueue, {});
+  assert.equal(state.meta.lastDigestDate, '2026-07-18');
+  assert.equal(selectDigestBatch(state, { today: '2026-07-18', limit: 30 }).jobs.length, 0);
 });

@@ -22,6 +22,7 @@ test('two consecutive simulated runs suppress only successfully recorded jobs', 
   const second = loadState(dir);
   assert.ok(second.notified[jobKey(job)]);
   assert.deepEqual(second.pending, {});
+  assert.deepEqual(second.digestQueue, {});
   assert.deepEqual(second.portalHealth, {});
   assert.equal(second.version, STATE_SCHEMA_VERSION);
 });
@@ -46,6 +47,7 @@ test('version 2 cache migration preserves notified jobs and initializes compact 
   const migrated = loadState(dir);
   assert.ok(migrated.notified.existing);
   assert.deepEqual(migrated.pending, {});
+  assert.deepEqual(migrated.digestQueue, {});
   assert.deepEqual(migrated.portalHealth, {});
   assert.equal(migrated.meta.migratedFrom, 2);
 });

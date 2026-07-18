@@ -4,7 +4,8 @@ import 'dotenv/config';
 
 const root = process.cwd();
 const githubActions = /^(1|true)$/i.test(process.env.GITHUB_ACTIONS || '');
-const runMode = String(process.env.MONITOR_MODE || 'full').toLowerCase() === 'fast' ? 'fast' : 'full';
+const requestedMode = String(process.env.MONITOR_MODE || 'full').toLowerCase();
+const runMode = ['fast', 'digest'].includes(requestedMode) ? requestedMode : 'full';
 
 function int(name, fallback) {
   const value = Number.parseInt(process.env[name] ?? '', 10);
@@ -45,6 +46,7 @@ export const config = {
   maxFastCompanies: Math.max(1, Math.min(100, int('MAX_FAST_COMPANIES', 60))),
   browserEnabled: bool('BROWSER_ENABLED', runMode !== 'fast'),
   notificationLimit: Math.max(1, Math.min(100, int('NOTIFICATION_LIMIT', runMode === 'fast' ? 15 : 30))),
+  eodDigestLimit: Math.max(1, Math.min(50, int('EOD_DIGEST_LIMIT', 30))),
   fastMinimumScore: Math.max(0, Math.min(100, int('FAST_MINIMUM_SCORE', 75))),
   replayNotified: bool('REPLAY_NOTIFIED', false),
   pendingRetentionDays: Math.max(1, Math.min(30, int('PENDING_RETENTION_DAYS', 14))),

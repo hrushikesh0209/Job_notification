@@ -8,6 +8,7 @@
     "inspect:workbook": "node src/inspect-workbook.js",
     "monitor": "node src/index.js",
     "monitor:dry": "node src/index.js --dry-run",
+    "digest": "node src/digest.js",
     "diagnose": "node src/index.js --dry-run",
     "test": "node --test"
   },
