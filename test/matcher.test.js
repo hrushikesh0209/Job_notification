@@ -20,9 +20,16 @@ test('rejects staff, principal and manager roles', () => {
 });
 
 test('rejects off-profile specializations and higher numbered levels', () => {
-  for (const title of ['Embedded Software Engineer', 'Software Engineer, Firmware', 'Software Engineer, PhD, Early Career', 'Software Engineer III']) {
+  for (const title of ['Embedded Software Engineer', 'Software Engineer, Firmware', 'Software Engineer, PhD, Early Career', 'Software Engineer III', 'Software Development Engineer-III', 'Software Engineer II (Software Engineer in Test)', 'Software Engineer, C++', 'Software Engineer - SRE (Rust)', 'Software Engineer, React Native', 'Verification and Validation Software Engineer']) {
     assert.equal(matchJob({ title, location: 'Bengaluru, India', description: 'Java Spring Boot microservices with Kafka. 2 years of experience.' }).matched, false);
   }
+});
+
+test('returns structured, explainable rejection reason codes', () => {
+  const result = matchJob({ title: 'Lead Software Engineer', location: 'Pune, India', description: 'Java Spring Boot, 3 years experience' });
+  assert.equal(result.matched, false);
+  assert.equal(result.reasonCode, 'SENIORITY_EXCLUDED');
+  assert.match(result.rejection.details, /excluded/i);
 });
 
 test('requires at least one matching stack skill', () => {

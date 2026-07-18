@@ -21,8 +21,16 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CONCURRENCY: "4"
+      PER_DOMAIN_CONCURRENCY: "2"
+      BROWSER_CONCURRENCY: "1"
+      DETAIL_CONCURRENCY: "4"
       REQUEST_TIMEOUT_MS: "20000"
       BROWSER_TIMEOUT_MS: "25000"
+      REQUEST_RETRIES: "2"
+      MAX_PAGES_PER_PORTAL: "5"
+      MAX_GENERIC_PAGES: "3"
+      MAX_JOBS_PER_PORTAL: "150"
+      MAX_DETAIL_JOBS_PER_PORTAL: "80"
       SMTP_HOST: ${{ secrets.SMTP_HOST }}
       SMTP_PORT: ${{ secrets.SMTP_PORT }}
       SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
@@ -54,21 +62,24 @@ jobs:
         run: npx playwright-core install --with-deps chromium
 
       - name: Restore duplicate-notification state
+        id: state-cache
         uses: actions/cache/restore@v4
         with:
           path: data/state.json
-          key: job-monitor-state-${{ github.run_id }}
+          key: job-monitor-state-v2-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            job-monitor-state-
+            job-monitor-state-v2-${{ github.ref_name }}-
 
       - name: Run job monitor
+        id: monitor
         run: node src/index.js
 
       - name: Save duplicate-notification state
+        if: success() && hashFiles('data/state.json') != ''
         uses: actions/cache/save@v4
         with:
           path: data/state.json
-          key: job-monitor-state-${{ github.run_id }}
+          key: job-monitor-state-v2-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Publish workflow summary
         id: result
@@ -83,6 +94,19 @@ jobs:
           path: reports/
           retention-days: 30
           if-no-files-found: error
+
+      - name: Upload portal coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portal-coverage-${{ github.run_id }}
+          path: |
+            reports/coverage.json
+            reports/coverage.csv
+            logs/last-errors.json
+            data/run-result.json
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload failure diagnostics
         if: failure()

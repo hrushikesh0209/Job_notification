@@ -2,12 +2,13 @@
   "name": "official-career-job-monitor",
   "version": "1.0.0",
   "private": true,
-  "description": "Hourly official career portal monitor with profile matching and duplicate suppression.",
+  "description": "Four-hourly official career portal monitor with ATS adapters, coverage diagnostics, profile matching, and safe duplicate suppression.",
   "type": "module",
   "scripts": {
     "inspect:workbook": "node src/inspect-workbook.js",
     "monitor": "node src/index.js",
     "monitor:dry": "node src/index.js --dry-run",
+    "diagnose": "node src/index.js --dry-run",
     "test": "node --test"
   },
   "dependencies": {

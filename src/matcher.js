@@ -1,7 +1,7 @@
-const TARGET_TITLE = /\b(?:software\s+(?:development\s+)?engineer(?:\s+[12i]{1,3})?|sde\s*[-–]?\s*(?:1|2|i|ii)\b|backend(?:\s+software)?\s+engineer|java\s+(?:backend\s+engineer|developer)|application\s+developer|platform\s+engineer)\b/i;
-const DISALLOWED_TITLE = /\b(?:staff|principal|architect|manager|director|head|vice\s+president|vp|distinguished|fellow|engineering\s+lead|technical\s+lead|tech\s+lead)\b/i;
-const DISALLOWED_SPECIALIZATION = /\b(?:ph\.?d|embedded|firmware|front[- ]?end|ios|android|machine\s+learning|ai\s*\/\s*ml|quality\s+assurance|test\s+automation)\b/i;
-const TOO_HIGH_NUMBERED_LEVEL = /\bsoftware\s+(?:development\s+)?engineer\s+(?:3|iii|4|iv)\b/i;
+const TARGET_TITLE = /\b(?:software\s+(?:development\s+)?engineer(?:\s*[-–]?\s*(?:1|2|i|ii))?|sde\s*[-–]?\s*(?:1|2|i|ii)\b|backend(?:\s+software)?\s+engineer|java\s+(?:backend\s+engineer|developer)|application\s+developer|platform\s+engineer)\b/i;
+const DISALLOWED_TITLE = /\b(?:staff|principal|architect|manager|director|head|vice\s+president|vp|distinguished|fellow|lead|leader|leadership)\b/i;
+const DISALLOWED_SPECIALIZATION = /(?:\b(?:ph\.?d|embedded|firmware|front[- ]?end|ios|android|react\s+native|machine\s+learning|ai\s*(?:\/\s*ml|platform)?|quality\s+assurance|(?:software\s+engineer\s+in\s+)?test|test\s+automation|site\s+reliability|sre|verification|validation|software\s+support|graphics|rust)\b|\bc\+\+(?!\+))/i;
+const TOO_HIGH_NUMBERED_LEVEL = /\b(?:software\s+(?:development\s+)?engineer|sde)\s*[-–]?\s*(?:3|iii|4|iv)\b/i;
 const SENIOR_TITLE = /\b(?:senior|sr\.?)\b/i;
 const NON_BACKEND_SENIOR_TITLE = /\b(?:front[- ]?end|mobile|ios|android|devops|test|qa|quality|systems?|embedded|firmware|graphics|machine\s+learning|data)\b/i;
 const TARGET_LOCATION = /\b(?:india|hyderabad|bengaluru|bangalore|chennai|pune|gurugram|gurgaon|noida|mumbai)\b/i;
@@ -47,7 +47,6 @@ export function extractExperience(text) {
     /\b(\d{1,2})\s*\+\s*(?:years?|yrs?)\b/gi,
     /\b(\d{1,2})\s*(?:years?|yrs?)\s+(?:of\s+)?(?:professional\s+|relevant\s+)?experience\b/gi,
   ];
-
   for (const pattern of patterns) {
     for (const match of source.matchAll(pattern)) {
       const min = Number(match[1]);
@@ -58,13 +57,16 @@ export function extractExperience(text) {
       ranges.push({ min, max });
     }
   }
-
   return { display: values.slice(0, 3).join('; '), ranges };
 }
 
 function experienceFits(experience) {
   if (!experience.ranges.length) return true;
   return experience.ranges.some(({ min, max }) => min <= 4 && (max == null || max >= 1));
+}
+
+function reject(reasonCode, reason, details) {
+  return { matched: false, reason, reasonCode, rejection: { code: reasonCode, details } };
 }
 
 export function isPotentialJob(job) {
@@ -80,26 +82,29 @@ export function matchJob(job) {
   const allText = `${title} ${description}`;
   const locationText = `${location} ${description.slice(0, 800)}`;
 
-  if (!TARGET_TITLE.test(title)) return { matched: false, reason: 'title' };
-  if (DISALLOWED_TITLE.test(title)) return { matched: false, reason: 'seniority' };
-  if (DISALLOWED_SPECIALIZATION.test(title) || TOO_HIGH_NUMBERED_LEVEL.test(title)) return { matched: false, reason: 'specialization-or-level' };
+  if (!title) return reject('TITLE_MISSING', 'title', 'No job title was parsed.');
+  if (!TARGET_TITLE.test(title)) return reject('TITLE_NOT_TARGET', 'title', `Title is outside the requested role families: ${title}`);
+  if (DISALLOWED_TITLE.test(title)) return reject('SENIORITY_EXCLUDED', 'seniority', `Title contains an excluded leadership or advanced-seniority marker: ${title}`);
+  if (DISALLOWED_SPECIALIZATION.test(title)) return reject('SPECIALIZATION_EXCLUDED', 'specialization-or-level', `Title is an excluded specialization: ${title}`);
+  if (TOO_HIGH_NUMBERED_LEVEL.test(title)) return reject('LEVEL_TOO_HIGH', 'specialization-or-level', `Numbered role level is above Engineer II/SDE-2: ${title}`);
   if (!(TARGET_LOCATION.test(locationText) || (REMOTE.test(locationText) && /\bindia\b/i.test(locationText)))) {
-    return { matched: false, reason: 'location' };
+    return reject('LOCATION_OUTSIDE_TARGET', 'location', `No target India location was found in: ${location || 'missing location'}`);
   }
 
   const experience = extractExperience(description);
-  if (!experienceFits(experience)) return { matched: false, reason: 'experience' };
+  if (!experienceFits(experience)) return reject('EXPERIENCE_TOO_HIGH', 'experience', `Stated experience does not overlap 1-4 years: ${experience.display}`);
+  if (!description) return reject('DESCRIPTION_MISSING', 'description', 'No description or listing summary was parsed before filtering.');
 
   const skills = extractSkills(allText);
-  if (!skills.length) return { matched: false, reason: 'skills' };
+  if (!skills.length) return reject('SKILL_SIGNAL_MISSING', 'skills', 'No requested stack keyword was found; every skill is not required, but at least one signal is needed.');
   const senior = SENIOR_TITLE.test(title);
   if (senior) {
     const explicitBackendTitle = /\b(?:backend|back-end|java)\b/i.test(title);
     const strongBackendStack = /\bjava\b/i.test(description)
-      && [ /\bspring\s*boot\b/i, /\bmicro[- ]?services?\b/i, /\bkafka\b/i, /\brest(?:ful)?\s+api/i, /\b(?:hibernate|jpa)\b/i ]
+      && [/\bspring\s*boot\b/i, /\bmicro[- ]?services?\b/i, /\bkafka\b/i, /\brest(?:ful)?\s+api/i, /\b(?:hibernate|jpa)\b/i]
         .filter((pattern) => pattern.test(description)).length >= 2;
     if (!experience.ranges.length || NON_BACKEND_SENIOR_TITLE.test(title) || (!explicitBackendTitle && !strongBackendStack)) {
-      return { matched: false, reason: 'senior-without-suitable-backend-experience' };
+      return reject('SENIOR_ROLE_INSUFFICIENT_EVIDENCE', 'senior-without-suitable-backend-experience', 'Senior role lacks explicit compatible experience and strong backend evidence.');
     }
   }
 
@@ -110,15 +115,15 @@ export function matchJob(job) {
   if (/\b(?:hyderabad|bengaluru|bangalore|chennai|pune|gurugram|gurgaon|noida|mumbai)\b/i.test(location)) score += 5;
   if (senior) score -= 8;
 
-  const why = [];
-  why.push(`The ${title} title is within the requested software/backend role family.`);
-  if (skills.length) why.push(`It mentions ${skills.slice(0, 5).join(', ')}, which overlap with your stack.`);
+  const why = [`The ${title} title is within the requested software/backend role family.`];
+  why.push(`It mentions ${skills.slice(0, 5).join(', ')}, which overlap with your stack.`);
   if (experience.display) why.push(`The stated experience (${experience.display}) overlaps your target range.`);
   else why.push('No explicit experience requirement was found, so it remains eligible.');
   why.push(`The role is listed for ${location || 'a target India location'}.`);
 
   return {
     matched: true,
+    reasonCode: 'ACCEPTED_PROFILE_MATCH',
     score,
     skills,
     experience: experience.display || 'Not specified',

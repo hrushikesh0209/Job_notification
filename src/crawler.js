@@ -1,330 +1,333 @@
 import fs from 'node:fs';
 import { load } from 'cheerio';
 import { chromium } from 'playwright-core';
-import { isPotentialJob } from './matcher.js';
+import { ADAPTERS } from './adapters.js';
+import { bodyText, extractJobPostingFromHtml, mapLimited, normalizeJob, uniqueJobs } from './job-utils.js';
+import { classifyHttpFailure, createHttpClient } from './http-client.js';
+import { detectPlatform, isAuthorizedJobUrl, KNOWN_BROWSER_ONLY_PLATFORMS, SUPPORTED_API_PLATFORMS } from './platform.js';
 
-const USER_AGENT = process.platform === 'win32'
-  ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36 OfficialCareerJobMonitor/1.0'
-  : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36 OfficialCareerJobMonitor/1.0';
-const JOB_HREF = /(?:\/jobs?\/|jobid|job-id|job_id|jobdetail|job-detail|positions?\/|openings?\/|requisition|posting)/i;
+const JOB_HREF = /(?:\/jobs?\/|jobid|job-id|job_id|jobdetail|job-detail|positions?\/|openings?\/|requisition|posting|vacanc)/i;
 const SEARCH_TEXT = /^(?:search\s+jobs?|view\s+(?:all\s+)?jobs?|all\s+jobs?|open\s+positions?|job\s+openings?|find\s+jobs?)$/i;
-const ROLE_TEXT = /\b(?:software\s+(?:development\s+)?engineer|sde\s*[-–]?\s*(?:1|2|i|ii)\b|backend|java\s+(?:developer|engineer)|application\s+developer|platform\s+engineer)\b/i;
+const NEXT_TEXT = /^(?:next|next page|more jobs|show more|load more|›|»)$/i;
+const ROLE_TEXT = /\b(?:software|sde|developer|backend|java|application|platform|engineer)\b/i;
 const LOCATION_TEXT = /\b(?:india|hyderabad|bengaluru|bangalore|chennai|pune|gurugram|gurgaon|noida|mumbai|remote)\b/i;
-
-function clean(value) {
-  return String(value || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function absoluteUrl(href, base) {
-  try {
-    const url = new URL(href, base);
-    url.pathname = url.pathname.replace(/(\/jobs\/results){2,}/i, '/jobs/results');
-    return url.href;
-  } catch { return ''; }
-}
+const BLOCK_TEXT = /captcha|access denied|unusual traffic|verify (?:you are|that you're) human|request blocked|akamai reference|cloudflare ray id/i;
 
 function cleanTitle(value) {
-  return clean(value).replace(/^(?:learn\s+more\s+about|view\s+(?:the\s+)?job|job\s+details?\s*[:-]?)\s+/i, '').trim();
-}
-
-function uniqueJobs(jobs) {
-  const seen = new Set();
-  return jobs.filter((job) => {
-    const key = `${job.url}|${job.title}`.toLowerCase();
-    if (!job.url || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-async function mapLimited(items, limit, worker) {
-  const results = new Array(items.length);
-  let next = 0;
-  async function run() {
-    while (true) {
-      const index = next++;
-      if (index >= items.length) return;
-      results[index] = await worker(items[index], index);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
-  return results;
+  return String(value || '').replace(/\s+/g, ' ').replace(/^(?:learn\s+more\s+about|view\s+(?:the\s+)?job|job\s+details?\s*[:-]?)\s+/i, '').trim();
 }
 
 function locationFromText(text) {
-  const value = clean(text);
-  const match = value.match(/(?:location|locations?)\s*:?\s*([^|•\n]{2,100})/i);
-  if (match && LOCATION_TEXT.test(match[1])) return clean(match[1]);
-  const city = value.match(/\b(?:remote(?:\s*[-–,]\s*india)?|(?:hyderabad|bengaluru|bangalore|chennai|pune|gurugram|gurgaon|noida|mumbai)(?:,\s*[A-Za-z ]{2,30})?(?:,\s*India)?|India)\b/i);
-  return clean(city?.[0] || '');
+  const value = String(text || '').replace(/\s+/g, ' ');
+  const explicit = value.match(/(?:location|locations?)\s*:?\s*([^|•\n]{2,100})/i)?.[1];
+  if (explicit && LOCATION_TEXT.test(explicit)) return explicit.trim();
+  return value.match(/\b(?:remote(?:\s*[-–,]\s*india)?|(?:hyderabad|bengaluru|bangalore|chennai|pune|gurugram|gurgaon|noida|mumbai)(?:,\s*[A-Za-z ]{2,30})?(?:,\s*India)?|India)\b/i)?.[0] || '';
 }
 
-function dateFromText(text) {
-  const value = clean(text);
-  return clean(value.match(/\b(?:posted\s+)?(?:today|yesterday|\d+\s+days?\s+ago|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2})\b/i)?.[0] || '');
-}
-
-function parseJobPosting(value, pageUrl, company) {
-  const locationValue = value.jobLocation;
-  const locations = (Array.isArray(locationValue) ? locationValue : [locationValue]).filter(Boolean).map((item) => {
-    const address = item?.address || item;
-    return [address?.addressLocality, address?.addressRegion, address?.addressCountry].filter(Boolean).join(', ');
-  }).filter(Boolean);
-  return {
-    company,
-    title: cleanTitle(value.title || value.name),
-    location: locations.join(' / ') || clean(value.jobLocationType),
-    postingDate: clean(value.datePosted),
-    description: clean(value.description),
-    summary: clean(value.description).slice(0, 800),
-    url: absoluteUrl(value.url || pageUrl, pageUrl),
-  };
-}
-
-function extractFromHtml(html, pageUrl, company) {
+function parseHtml(html, pageUrl, company) {
+  const structured = extractJobPostingFromHtml(html, pageUrl, company, company.portalUrl);
+  if (structured.length) return { jobs: structured, searchLinks: [], nextLinks: [], blocked: false };
   const $ = load(html);
-  const structured = [];
-  $('script[type="application/ld+json"]').each((_, element) => {
-    try {
-      const parsed = JSON.parse($(element).text());
-      const queue = Array.isArray(parsed) ? parsed : parsed?.['@graph'] || [parsed];
-      for (const value of queue) {
-        if (/JobPosting/i.test(String(value?.['@type'] || ''))) structured.push(parseJobPosting(value, pageUrl, company));
-      }
-    } catch { /* Some portals emit invalid or templated JSON-LD. */ }
-  });
-  if (structured.length) return { jobs: structured, searchLinks: [] };
-
   const jobs = [];
   const searchLinks = [];
+  const nextLinks = [];
   $('a[href]').each((_, element) => {
     const link = $(element);
-    const href = absoluteUrl(link.attr('href'), pageUrl);
-    const anchorText = clean(link.text() || link.attr('aria-label') || link.attr('title'));
+    let href = '';
+    try { href = new URL(link.attr('href'), pageUrl).href; } catch { return; }
+    const text = cleanTitle(link.text() || link.attr('aria-label') || link.attr('title'));
     if (!href || !/^https?:/i.test(href)) return;
-    if (SEARCH_TEXT.test(anchorText)) searchLinks.push(href);
-    if (!JOB_HREF.test(href)) return;
-    const container = link.closest('li, article, tr, [class*="job"], [class*="position"], [class*="opening"]').first();
-    const summary = clean(container.length ? container.text() : link.parent().text());
-    const heading = clean(container.find('h1,h2,h3,h4,[class*="title"]').first().text());
-    const title = cleanTitle(anchorText && !/^(apply|view|learn more|details|read more)$/i.test(anchorText) ? anchorText : heading);
+    if (SEARCH_TEXT.test(text) && isAuthorizedJobUrl(href, company.portalUrl)) searchLinks.push(href);
+    if (NEXT_TEXT.test(text) && isAuthorizedJobUrl(href, company.portalUrl)) nextLinks.push(href);
+    if (!JOB_HREF.test(href) || !isAuthorizedJobUrl(href, company.portalUrl)) return;
+    const container = link.closest('li,article,tr,[class*="job"],[class*="position"],[class*="opening"],[class*="vacanc"]').first();
+    const summary = (container.length ? container.text() : link.parent().text()).replace(/\s+/g, ' ').trim();
+    const heading = container.find('h1,h2,h3,h4,[class*="title"]').first().text().replace(/\s+/g, ' ').trim();
+    const title = cleanTitle(!/^(?:apply|view|learn more|details|read more)$/i.test(text) ? text : heading);
     if (!ROLE_TEXT.test(`${title} ${summary}`)) return;
-    jobs.push({ company, title: title || summary.slice(0, 150), location: locationFromText(summary), postingDate: dateFromText(summary), summary, description: '', url: href });
+    jobs.push(normalizeJob({ title: title || summary.slice(0, 160), location: locationFromText(summary), summary, url: href }, company, company.portalUrl));
   });
-  return { jobs: uniqueJobs(jobs), searchLinks: [...new Set(searchLinks)] };
-}
-
-async function fetchText(url, timeoutMs, options = {}) {
-  const response = await fetch(url, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(timeoutMs),
-    headers: { 'user-agent': USER_AGENT, accept: 'text/html,application/xhtml+xml,application/json' },
-    ...options,
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-  return { text: await response.text(), finalUrl: response.url, contentType: response.headers.get('content-type') || '' };
-}
-
-function workdayParts(portalUrl) {
-  const url = new URL(portalUrl);
-  if (!/\.myworkdayjobs\.com$/i.test(url.hostname)) return null;
-  const site = url.pathname.split('/').filter(Boolean)[0];
-  const tenant = url.hostname.split('.')[0];
-  return site ? { origin: url.origin, site, tenant } : null;
+  return {
+    jobs: uniqueJobs(jobs).filter((job) => job.authorizedUrl),
+    searchLinks: [...new Set(searchLinks)],
+    nextLinks: [...new Set(nextLinks)],
+    blocked: BLOCK_TEXT.test($('body').text()),
+  };
 }
 
 function targetedPortalUrl(company) {
   const url = new URL(company.portalUrl);
-  const host = url.hostname.toLowerCase();
-  if (host === 'www.google.com' && url.pathname.includes('/careers/')) {
+  const hostname = url.hostname.toLowerCase();
+  if (hostname === 'www.google.com' && url.pathname.includes('/careers/')) {
     url.searchParams.set('q', 'Software Engineer');
     url.searchParams.set('location', 'India');
-  } else if (host.endsWith('amazon.jobs')) {
+  } else if (hostname.endsWith('amazon.jobs')) {
     url.pathname = '/en/search';
     url.searchParams.set('base_query', 'Software Engineer');
     url.searchParams.set('loc_query', 'India');
-  } else if (host === 'jobs.careers.microsoft.com') {
+  } else if (hostname === 'jobs.careers.microsoft.com') {
     url.searchParams.set('q', 'Software Engineer');
     url.searchParams.set('lc', 'India');
-  } else if (host === 'jobs.apple.com') {
+  } else if (hostname === 'jobs.apple.com') {
     url.searchParams.set('search', 'Software Engineer');
     url.searchParams.set('location', 'india-INDC');
   }
   return url.href;
 }
 
-async function crawlWorkday(company, timeoutMs) {
-  const parts = workdayParts(company.portalUrl);
-  if (!parts) return null;
-  const endpoint = `${parts.origin}/wday/cxs/${parts.tenant}/${parts.site}/jobs`;
-  const postings = [];
-  for (const searchText of ['Java', 'Backend Software Engineer', 'Software Engineer']) {
-    const { text } = await fetchText(endpoint, timeoutMs, {
-      method: 'POST',
-      headers: { 'user-agent': USER_AGENT, accept: 'application/json', 'content-type': 'application/json' },
-      body: JSON.stringify({ appliedFacets: {}, limit: 20, offset: 0, searchText }),
-    });
-    const result = JSON.parse(text);
-    for (const item of result.jobPostings || []) {
-      const externalPath = item.externalPath || '';
-      postings.push({
-        company: company.company,
-        title: clean(item.title),
-        location: clean(item.locationsText || item.location),
-        postingDate: clean(item.postedOn),
-        summary: clean([...(item.bulletFields || []), item.title, item.locationsText].join(' ')),
-        description: '',
-        url: `${parts.origin}/${parts.site}${externalPath}`,
-        detailApi: `${parts.origin}/wday/cxs/${parts.tenant}/${parts.site}${externalPath}`,
-      });
-    }
-  }
-
-  const candidates = uniqueJobs(postings).filter(isPotentialJob).slice(0, 25);
-  await mapLimited(candidates, 5, async (job) => {
-    try {
-      const { text } = await fetchText(job.detailApi, timeoutMs);
-      const data = JSON.parse(text).jobPostingInfo || JSON.parse(text);
-      job.title = clean(data.title || job.title);
-      job.location = clean(data.location || data.additionalLocations?.join(' / ') || job.location);
-      job.postingDate = clean(data.startDate || data.postedOn || job.postingDate);
-      job.description = clean(data.jobDescription || data.description);
-      job.url = absoluteUrl(data.externalUrl || job.url, job.url);
-    } catch (error) {
-      job.detailError = error.message;
-    }
-    delete job.detailApi;
-  });
-  return candidates;
-}
-
-function findBrowserExecutable(configured) {
-  let playwrightBrowser = '';
-  try { playwrightBrowser = chromium.executablePath(); } catch { /* Browser may not be installed yet. */ }
-  const candidates = [
-    configured,
-    playwrightBrowser,
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
+function browserExecutable(configured) {
+  let bundled = '';
+  try { bundled = chromium.executablePath(); } catch { /* Not installed. */ }
+  return [
+    configured, bundled, '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser',
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  ].filter(Boolean);
-  return candidates.find((candidate) => fs.existsSync(candidate)) || '';
+  ].filter(Boolean).find((candidate) => fs.existsSync(candidate)) || '';
 }
 
-export async function createCrawler(config) {
+class Semaphore {
+  constructor(limit) { this.limit = Math.max(1, limit); this.active = 0; this.queue = []; }
+  async use(worker) {
+    if (this.active >= this.limit) await new Promise((resolve) => this.queue.push(resolve));
+    this.active++;
+    try { return await worker(); } finally { this.active--; this.queue.shift()?.(); }
+  }
+}
+
+function emptyCoverage(company) {
+  return {
+    company: company.company,
+    portalUrl: company.portalUrl,
+    portalType: 'custom',
+    httpStatus: null,
+    finalUrl: '',
+    retrievalMethod: 'none',
+    jobsDiscovered: 0,
+    detailsParsed: 0,
+    accepted: 0,
+    rejected: 0,
+    rejectionReasons: {},
+    pagination: { pagesFetched: 0, totalAvailable: null, complete: false, capped: false },
+    durationMs: 0,
+    errors: [],
+    timeoutReason: '',
+    status: 'broken',
+  };
+}
+
+export async function createCrawler(config, dependencies = {}) {
+  const http = dependencies.http || createHttpClient(config, dependencies);
+  const browserGate = new Semaphore(config.browserConcurrency || 1);
   let browserPromise;
-  async function browser() {
-    while (true) {
-      const current = browserPromise;
-      if (current) {
-        const existing = await current.catch(() => null);
-        if (browserPromise !== current) continue;
-        if (existing?.isConnected()) return existing;
+  let contextPromise;
+
+  async function browserContext() {
+    if (browserPromise) {
+      const instance = await browserPromise.catch(() => null);
+      if (!instance?.isConnected()) {
         browserPromise = null;
+        contextPromise = null;
       }
-      if (!browserPromise) {
-        const executablePath = findBrowserExecutable(config.browserExecutable);
-        if (!executablePath) throw new Error('Chromium, Chrome, or Edge was not found; install Playwright Chromium or set BROWSER_EXECUTABLE');
-        browserPromise = chromium.launch({ executablePath, headless: true, args: ['--disable-gpu', '--disable-background-networking'] });
-      }
-      return browserPromise;
     }
+    if (!contextPromise) {
+      const executablePath = browserExecutable(config.browserExecutable);
+      if (!executablePath) throw new Error('Chromium, Chrome, or Edge was not found');
+      browserPromise = chromium.launch({ executablePath, headless: true, args: ['--disable-gpu', '--disable-background-networking'] });
+      contextPromise = browserPromise.then((instance) => instance.newContext({ userAgent: config.userAgent, viewport: { width: 1365, height: 900 } }));
+    }
+    return contextPromise;
+  }
+
+  async function resetBrowser() {
+    const context = await contextPromise?.catch(() => null);
+    const instance = await browserPromise?.catch(() => null);
+    contextPromise = null;
+    browserPromise = null;
+    await context?.close().catch(() => {});
+    await instance?.close().catch(() => {});
   }
 
   async function browserExtractOnce(company, url) {
-    const instance = await browser();
-    let page;
+    const context = await browserContext();
+    const page = await context.newPage();
     try {
-      page = await instance.newPage({ userAgent: USER_AGENT, viewport: { width: 1365, height: 900 } });
       page.setDefaultTimeout(config.browserTimeoutMs);
-      await page.goto(targetedPortalUrl({ ...company, portalUrl: url }), { waitUntil: 'domcontentloaded', timeout: config.browserTimeoutMs });
-      await page.waitForTimeout(1_500);
-      let parsed = extractFromHtml(await page.content(), page.url(), company.company);
-
-      if (parsed.jobs.length < 3) {
-        try {
-          const inputs = page.locator('input:visible');
-          const count = Math.min(await inputs.count(), 20);
-          let keywordInput = null;
-          let locationInput = null;
-          for (let index = 0; index < count; index++) {
-            const input = inputs.nth(index);
-            const signature = `${await input.getAttribute('type') || ''} ${await input.getAttribute('name') || ''} ${await input.getAttribute('id') || ''} ${await input.getAttribute('placeholder') || ''} ${await input.getAttribute('aria-label') || ''}`;
-            if (!locationInput && /location|city|country/i.test(signature)) locationInput = input;
-            else if (!keywordInput && /search|keyword|query|title|job/i.test(signature)) keywordInput = input;
-          }
-          if (keywordInput) {
-            await keywordInput.fill('Software Engineer');
-            if (locationInput) await locationInput.fill('India');
-            await keywordInput.press('Enter');
-            await page.waitForTimeout(2_500);
-            const searched = extractFromHtml(await page.content(), page.url(), company.company);
-            if (searched.jobs.length) parsed = searched;
-          }
-        } catch { /* Search controls vary; retain listings already extracted. */ }
-      }
-      return parsed;
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: config.browserTimeoutMs });
+      await page.waitForTimeout(config.browserSettleMs);
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+      await page.waitForTimeout(500);
+      const html = await page.content();
+      return { ...parseHtml(html, page.url(), company), html, finalUrl: page.url(), httpStatus: response?.status() || null };
     } finally {
-      if (page) await page.close().catch(() => {});
+      await page.close().catch(() => {});
     }
   }
 
   async function browserExtract(company, url) {
-    try {
-      return await browserExtractOnce(company, url);
-    } catch (error) {
-      if (!/browser (?:has been )?closed|target page.*closed|browser\.newPage/i.test(error.message)) throw error;
-      return browserExtractOnce(company, url);
-    }
-  }
-
-  async function enrichDetails(jobs) {
-    return mapLimited(jobs.filter(isPotentialJob).slice(0, 20), 4, async (job) => {
+    if (dependencies.browserExtract) return dependencies.browserExtract(company, url);
+    return browserGate.use(async () => {
       try {
-        const fetched = await fetchText(job.url, config.requestTimeoutMs);
-        const parsed = extractFromHtml(fetched.text, fetched.finalUrl, job.company).jobs;
-        const detail = parsed.find((value) => value.title) || null;
-        if (detail) return { ...job, ...detail, company: job.company };
-        return { ...job, description: clean(load(fetched.text)('body').text()).slice(0, 30_000), url: fetched.finalUrl };
-      } catch {
-        return job;
+        return await browserExtractOnce(company, url);
+      } catch (error) {
+        if (!/browser.*closed|target page.*closed|context.*closed|Target\.createTarget|browserContext\.newPage/i.test(error.message)) throw error;
+        await resetBrowser();
+        return browserExtractOnce(company, url);
       }
     });
   }
 
+  async function enrichGeneric(jobs) {
+    const selected = jobs.slice(0, config.maxDetailJobsPerPortal);
+    await mapLimited(selected, config.detailConcurrency, async (job) => {
+      try {
+        const response = await http.request(job.url);
+        const structured = extractJobPostingFromHtml(response.text, response.finalUrl, { company: job.company }, job.url);
+        const detail = structured[0];
+        if (detail) Object.assign(job, detail, { company: job.company, authorizedUrl: true });
+        else {
+          job.description = bodyText(response.text);
+          job.detailParsed = Boolean(job.description);
+          job.url = response.finalUrl;
+        }
+      } catch (error) {
+        job.detailError = error.message;
+      }
+    });
+    return selected.filter((job) => job.detailParsed).length;
+  }
+
+  async function genericCrawl(company, initial, coverage) {
+    let parsed = parseHtml(initial.text, initial.finalUrl, company);
+    let jobs = [...parsed.jobs];
+    const visited = new Set([initial.finalUrl]);
+    let pages = 1;
+    const queue = [...parsed.searchLinks.slice(0, 1), ...parsed.nextLinks.slice(0, 1)];
+    while (queue.length && pages < config.maxGenericPages) {
+      const url = queue.shift();
+      if (visited.has(url)) continue;
+      visited.add(url);
+      try {
+        const response = await http.request(url);
+        const page = parseHtml(response.text, response.finalUrl, company);
+        jobs.push(...page.jobs);
+        queue.push(...page.nextLinks.slice(0, 1));
+        parsed.blocked ||= page.blocked;
+        pages++;
+      } catch (error) {
+        coverage.errors.push(error.message);
+      }
+    }
+
+    let method = 'html';
+    if (!jobs.length) {
+      try {
+        const rendered = await browserExtract(company, targetedPortalUrl(company));
+        coverage.httpStatus = rendered.httpStatus || coverage.httpStatus;
+        coverage.finalUrl = rendered.finalUrl || coverage.finalUrl;
+        coverage.portalType = detectPlatform(rendered.finalUrl || company.portalUrl, rendered.html);
+        parsed = rendered;
+        jobs = rendered.jobs;
+        method = 'browser';
+        pages++;
+      } catch (error) {
+        coverage.errors.push(`Browser fallback: ${error.message}`);
+        if (/Timeout/i.test(error.message)) coverage.timeoutReason = error.message;
+      }
+    }
+
+    jobs = uniqueJobs(jobs).filter((job) => job.authorizedUrl).slice(0, config.maxJobsPerPortal);
+    const detailsParsed = await enrichGeneric(jobs);
+    const complete = Boolean(jobs.length) && !queue.length && jobs.length < config.maxJobsPerPortal;
+    return {
+      jobs,
+      method,
+      detailsParsed,
+      blocked: parsed.blocked,
+      pagination: { pagesFetched: pages, totalAvailable: null, complete, capped: jobs.length >= config.maxJobsPerPortal || Boolean(queue.length) },
+    };
+  }
+
   return {
     async crawl(company) {
-      const workday = await crawlWorkday(company, config.requestTimeoutMs);
-      if (workday) return { jobs: workday, method: 'workday-api' };
-
-      let parsed;
+      const started = Date.now();
+      const coverage = emptyCoverage(company);
+      let jobs = [];
       try {
-        const fetched = await fetchText(targetedPortalUrl(company), config.requestTimeoutMs);
-        parsed = extractFromHtml(fetched.text, fetched.finalUrl, company.company);
-        if (!parsed.jobs.length && parsed.searchLinks.length) {
-          const search = await fetchText(parsed.searchLinks[0], config.requestTimeoutMs);
-          parsed = extractFromHtml(search.text, search.finalUrl, company.company);
+        let initial = null;
+        coverage.portalType = detectPlatform(company.portalUrl);
+        if (coverage.portalType !== 'workday') {
+          try {
+            initial = await http.request(targetedPortalUrl(company));
+            coverage.httpStatus = initial.status;
+            coverage.finalUrl = initial.finalUrl;
+            coverage.portalType = detectPlatform(initial.finalUrl, initial.text);
+          } catch (error) {
+            coverage.httpStatus = error.status || null;
+            coverage.finalUrl = error.finalUrl || '';
+            coverage.errors.push(error.message);
+            if (error.timeout) coverage.timeoutReason = error.message;
+          }
         }
-      } catch {
-        parsed = { jobs: [], searchLinks: [] };
+
+        if (SUPPORTED_API_PLATFORMS.has(coverage.portalType)) {
+          try {
+            const adapted = await ADAPTERS[coverage.portalType](company, { http, config, html: initial?.text || '' });
+            if (adapted) {
+              jobs = adapted.jobs;
+              coverage.retrievalMethod = adapted.method;
+              coverage.httpStatus = adapted.httpStatus || coverage.httpStatus;
+              coverage.detailsParsed = adapted.detailsParsed;
+              coverage.pagination = adapted.pagination;
+              coverage.status = jobs.length ? (adapted.pagination.complete && adapted.detailsParsed === jobs.length ? 'working' : 'partially working') : 'empty';
+            }
+          } catch (error) {
+            coverage.errors.push(`${coverage.portalType} adapter: ${error.message}`);
+            if (error.timeout) coverage.timeoutReason = error.message;
+          }
+        }
+
+        if (coverage.retrievalMethod === 'none') {
+          if (!initial) {
+            try {
+              const rendered = await browserExtract(company, targetedPortalUrl(company));
+              initial = { text: rendered.html, finalUrl: rendered.finalUrl, status: rendered.httpStatus };
+              coverage.httpStatus = rendered.httpStatus;
+              coverage.finalUrl = rendered.finalUrl;
+              coverage.portalType = detectPlatform(rendered.finalUrl, rendered.html);
+            } catch (error) {
+              coverage.errors.push(`Browser fallback: ${error.message}`);
+              if (/Timeout/i.test(error.message)) coverage.timeoutReason = error.message;
+            }
+          }
+          if (initial) {
+            const generic = await genericCrawl(company, initial, coverage);
+            jobs = generic.jobs;
+            coverage.retrievalMethod = generic.method;
+            coverage.detailsParsed = generic.detailsParsed;
+            coverage.pagination = generic.pagination;
+            if (jobs.length) coverage.status = !coverage.errors.length && generic.detailsParsed === jobs.length && generic.pagination.complete ? 'working' : 'partially working';
+            else if (generic.blocked) coverage.status = 'blocked';
+            else coverage.status = KNOWN_BROWSER_ONLY_PLATFORMS.has(coverage.portalType) ? 'unsupported' : 'unsupported';
+          }
+        }
+      } catch (error) {
+        coverage.errors.push(error.message);
+        if (error.timeout) coverage.timeoutReason = error.message;
+        coverage.status = classifyHttpFailure(error);
       }
 
-      if (!parsed.jobs.length) {
-        parsed = await browserExtract(company, company.portalUrl);
-        if (!parsed.jobs.length && parsed.searchLinks.length) parsed = await browserExtract(company, parsed.searchLinks[0]);
+      if (!jobs.length && coverage.errors.length && coverage.status === 'unsupported') {
+        const blockedEvidence = coverage.httpStatus === 401 || coverage.httpStatus === 403 || coverage.httpStatus === 429
+          || coverage.errors.some((message) => /HTTP (?:401|403|429)\b|captcha|access denied|request blocked/i.test(message));
+        coverage.status = blockedEvidence ? 'blocked' : 'broken';
       }
-      return { jobs: await enrichDetails(uniqueJobs(parsed.jobs)), method: parsed.jobs.length ? 'html-or-browser' : 'no-listings-detected' };
+      coverage.jobsDiscovered = jobs.length;
+      coverage.durationMs = Date.now() - started;
+      return { jobs, coverage, method: coverage.retrievalMethod };
     },
     async close() {
-      if (browserPromise) {
-        const instance = await browserPromise.catch(() => null);
-        if (instance?.isConnected()) await instance.close();
-      }
+      await resetBrowser();
     },
   };
 }

@@ -1,87 +1,88 @@
 # Official Career Job Monitor
 
-A four-hourly GitHub Actions monitor for the company career links in `Final_Global_Software_Companies_Job_Portals.xlsx`. It searches for India-based Java/backend roles suitable for approximately two years of experience, suppresses duplicate notifications, and stays silent when nothing new qualifies.
+A four-hourly GitHub Actions monitor for the official company career links in `Final_Global_Software_Companies_Job_Portals.xlsx`. It discovers India-based Java/backend roles for approximately two years of experience, reports full portal coverage, and suppresses only jobs that were successfully delivered.
 
-The workbook currently contains 200 rows. The generic `linkedin.com/jobs/search` row is intentionally skipped because it is an aggregator search rather than LinkedIn's company-specific career portal, leaving 199 official company portal checks. Company-authorized ATS hosts such as Workday remain allowed.
+The workbook contains 200 rows. The generic LinkedIn search row is intentionally excluded, leaving 199 official company or company-authorized ATS portals.
 
-## What it matches
+## Retrieval pipeline
 
-- Software Engineer I/II, SDE-1/2, backend or Java engineer/developer, Application Developer, and Platform Engineer roles.
-- India, Hyderabad, Bengaluru/Bangalore, Chennai, Pune, Gurugram/Gurgaon, Noida, Mumbai, and remote roles explicitly available from India.
-- Experience requirements overlapping 1–4 years, plus roles where experience is not specified.
-- Senior roles only when they are explicitly backend-focused and state a compatible experience requirement.
-- At least one relevant skill such as Java, Spring Boot, JPA, Hibernate, Kafka, microservices, REST APIs, MongoDB, SQL, Docker, Kubernetes, Jenkins, Grafana, or Splunk.
+Each run performs:
 
-It rejects staff, principal, architect, manager, director, lead, leadership, clearly unrelated specialization, explicit 5+ year, and higher numbered Software Engineer III/IV roles.
+1. Workbook loading and official-portal policy validation.
+2. ATS detection for Workday, Greenhouse, Lever, SmartRecruiters, Eightfold, SuccessFactors, Oracle Recruiting, Taleo, iCIMS, Phenom, and custom sites.
+3. Public API retrieval with pagination for Workday, Greenhouse, Lever, and SmartRecruiters.
+4. HTML/JSON-LD extraction and a single reusable Chromium context as fallback.
+5. Official-link validation, detail parsing, profile filtering, stable-key deduplication, state restoration, and notification.
+6. Per-company JSON/CSV coverage, rejection totals, slowest portals, and a GitHub Actions summary.
 
-## How notifications work
+Portal status has a strict meaning:
 
-When new matching jobs are found, the workflow:
+- `working`: jobs and all selected details were retrieved with complete observed pagination.
+- `partially working`: jobs were found, but detail parsing, pagination, or an upstream request was incomplete.
+- `empty`: an authoritative supported API successfully confirmed zero results.
+- `unsupported`: the portal loaded but no reliable listing extraction was available.
+- `blocked`: access controls, rate limiting, consent/captcha behavior, or HTTP 401/403/429 prevented retrieval.
+- `broken`: invalid/DNS-failing URLs, HTTP errors, timeouts, or adapter failures prevented reliable retrieval.
 
-1. Creates one GitHub Issue containing company, title, location, posting date, required experience, relevant skills, match explanation, and the direct official application link.
-2. Uploads complete HTML and Markdown reports as a workflow artifact.
-3. Optionally sends the same report by SMTP email when email secrets are configured.
-4. Saves the successfully notified job IDs in the Actions cache so later runs do not repeat them.
+An unsupported, blocked, or broken portal is never silently treated as having no jobs.
 
-No Issue, email, or report artifact is created when there are no new relevant jobs. If every configured notification channel fails, the run fails and does not mark those jobs as notified.
+## Profile filter
 
-## GitHub setup
+The matcher targets Software Engineer I/II, SDE-1/2, Java/backend, application, and platform roles in India, Hyderabad, Bengaluru/Bangalore, Chennai, Pune, Gurugram/Gurgaon, Noida, Mumbai, or explicitly remote-from-India. Experience overlapping 1-4 years is preferred; suitable roles with no stated experience remain eligible.
 
-1. Create a GitHub repository and add this entire folder, including the workbook and `.github/workflows/job-monitor.yml`.
-2. Make sure repository **Issues** are enabled under **Settings → General → Features**.
-3. Make sure GitHub Actions is enabled. Organization policy must allow the workflow's `issues: write` permission.
-4. Commit and push the workflow to the repository's default branch. Scheduled workflows only run from the default branch.
-5. Open **Actions → Four-Hourly Official Career Job Monitor → Run workflow** for the first test.
+At least one requested stack signal is required, but not every skill: Java, Spring Boot, Hibernate/JPA, Kafka, microservices, REST, MongoDB, SQL, Docker, Kubernetes/OpenShift, Jenkins/CI/CD, Grafana, or Splunk.
 
-The schedule is `17 */4 * * *`: every four hours at minute 17, starting at 00:17 UTC. In India, the expected daily run times are approximately 01:47, 05:47, 09:47, 13:47, 17:47, and 21:47 IST. GitHub can delay scheduled runs during periods of high load.
+Every rejection has a structured reason code such as `TITLE_NOT_TARGET`, `LOCATION_OUTSIDE_TARGET`, `SENIORITY_EXCLUDED`, `EXPERIENCE_TOO_HIGH`, or `SKILL_SIGNAL_MISSING`. Clearly senior leadership, staff/principal/architect/manager, level III/IV, frontend/mobile/test/firmware/embedded/ML, SRE/Rust, React Native, C++, and validation/support roles are excluded.
 
-The first successful run starts with an empty ledger and can report currently open matching jobs. Later runs report only newly detected matches.
+## Reliability and state
 
-## Optional email secrets
+- Global concurrency is bounded, with separate per-domain, detail, and browser limits.
+- HTTP 408/425/429/5xx and transient network failures use exponential backoff with jitter.
+- Connections use Node's pooled `fetch`; one browser and context are reused and restarted after a crash.
+- API adapters run before browser fallback; an adapter failure falls through safely.
+- Listing/detail caps and incomplete pagination are reported rather than hidden.
+- Stable identity is `company + official job ID`, falling back to `company + canonical application URL`; title alone is never used.
+- `data/state.json` is schema-versioned, written atomically, and recovers a corrupt file to a timestamped backup.
+- A cache miss is visible and cannot suppress jobs.
+- Jobs are added to state only after at least one configured notification channel succeeds.
+- Failed scans and failed notifications do not overwrite a good ledger.
 
-GitHub Issues require no custom secret; the workflow uses the repository's temporary `GITHUB_TOKEN`. Email is optional. Add these under **Settings → Secrets and variables → Actions**:
+## Notifications and artifacts
 
-| Secret | Description |
-| --- | --- |
-| `SMTP_HOST` | SMTP server hostname |
-| `SMTP_PORT` | Usually `587` for STARTTLS or `465` for implicit TLS |
-| `SMTP_SECURE` | `true` for implicit TLS; otherwise `false` |
-| `SMTP_USER` | SMTP username |
-| `SMTP_PASS` | SMTP password or app password |
-| `MAIL_FROM` | Sender address |
-| `MAIL_TO` | Recipient address |
+New matches create one GitHub Issue through `GITHUB_TOKEN`; SMTP email is optional. No notification is sent when there are no new matches. Secrets are read only from environment variables and are never written to logs, reports, or summaries.
 
-If no SMTP secrets are supplied, GitHub Issue notification remains active.
+Every run uploads `portal-coverage-<run id>` containing:
 
-## State and duplicate suppression
+- `reports/coverage.json`
+- `reports/coverage.csv`
+- `logs/last-errors.json`
+- `data/run-result.json`
 
-`data/state.json` stores hashes of jobs that were successfully reported. The workflow restores the newest state through an `actions/cache` prefix and saves a new immutable cache entry after each successful run. Workflow concurrency prevents overlapping scans from racing on state.
+New-match HTML and Markdown reports are uploaded separately. The workflow summary shows status totals, discovery/parsing/filtering counts, rejection reasons, state recovery, and the slowest portals.
 
-GitHub cache is practical but not permanent storage. Regular scheduled use keeps it warm; if all caches are deleted or expire, currently open matching jobs may be reported once again. A dedicated state branch or external database can be added later if permanent history is required.
+## GitHub Actions
 
-## Local validation
+The schedule remains `17 */4 * * *` on `ubuntu-latest`, with a 55-minute job timeout and overlap protection. State cache keys are branch-scoped and schema-versioned.
 
-Local commands do not install a scheduler:
+Enable repository Issues and allow the workflow's `issues: write` permission. Optional SMTP secrets are:
+
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`
+- `SMTP_USER`, `SMTP_PASS`
+- `MAIL_FROM`, `MAIL_TO`
+
+Do not commit an `.env` file or credentials.
+
+## Local verification
 
 ```powershell
 npm.cmd ci
 npm.cmd test
 npm.cmd audit --omit=dev
 npm.cmd run inspect:workbook
+npm.cmd run diagnose
 node src/index.js --dry-run --company NVIDIA
-node src/index.js --dry-run --company Google
 ```
 
-Dry runs do not update duplicate state or send notifications. A normal local `npm run monitor` only writes reports unless SMTP or GitHub integration environment variables are supplied; the production deployment is GitHub Actions.
+Dry runs generate coverage but never notify or update duplicate state. The full live diagnostic is intentionally bounded but still contacts official career sites; use deterministic mocked tests for routine development.
 
-## Runtime files
-
-- `src/crawler.js` — Workday API plus HTML/Chromium portal extraction.
-- `src/matcher.js` — profile matching and experience rules.
-- `src/notify.js` — GitHub Issue, report, and optional email delivery.
-- `src/state.js` — stable duplicate keys and ledger.
-- `logs/monitor.log` — per-company progress inside a workflow run.
-- `logs/last-errors.json` — portals that could not be checked in the latest run.
-- `reports/latest.html` and `reports/latest.md` — generated only for a new-match batch.
-
-Career sites change and some use anti-automation controls. A portal showing zero candidates may require a future dedicated adapter; portal failures are logged without creating false job notifications.
+The production audit and latest controlled metrics are in `AUDIT.md`. Live reports are generated under `reports/` and intentionally gitignored.
